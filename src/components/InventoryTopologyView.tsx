@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { GitBranch, Globe, Search, Trash2 } from 'lucide-react';
+import { GitBranch, Globe, Layers, Search, Trash2 } from 'lucide-react';
 import { apiRequest } from '../lib/api.ts';
 import type {
   Asset,
@@ -7,6 +7,8 @@ import type {
   Concession,
   Criticality,
   LocalityType,
+  ServiceDependency,
+  ServiceEntity,
   Site,
   TopologyEdge,
 } from '../shared/types.ts';
@@ -16,12 +18,15 @@ interface InventoryTopologyViewProps {
   activeTenantId: string | null;
 }
 
-type SubTab = 'sites' | 'assets' | 'topology' | 'taxonomies';
+type SubTab = 'sites' | 'assets' | 'services' | 'topology' | 'taxonomies';
 
 export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewProps) {
   const [subTab, setSubTab] = useState<SubTab>('sites');
   const [sites, setSites] = useState<Site[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [services, setServices] = useState<Array<ServiceEntity & { dependency_count?: number }>>([]);
+  const [selectedServiceId, setSelectedServiceId] = useState<string>('');
+  const [serviceDeps, setServiceDeps] = useState<ServiceDependency[]>([]);
   const [edges, setEdges] = useState<TopologyEdge[]>([]);
   const [sharedDeps, setSharedDeps] = useState<Array<{ upstream_asset_id: string; downstream_count: number }>>([]);
   const [concessions, setConcessions] = useState<Concession[]>([]);
@@ -45,14 +50,29 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
   const [siteCriticality, setSiteCriticality] = useState<Criticality>('media');
   const [cepLoading, setCepLoading] = useState(false);
 
-  // Form Assets
+  // Form Assets (georeference optional / none)
   const [assetSiteId, setAssetSiteId] = useState('');
   const [assetCategoryId, setAssetCategoryId] = useState('');
+  const [assetDomain, setAssetDomain] = useState('ti');
+  const [assetGeoMode, setAssetGeoMode] = useState<'none' | 'optional' | 'required'>('optional');
   const [assetName, setAssetName] = useState('');
   const [assetHost, setAssetHost] = useState('');
   const [assetIp, setAssetIp] = useState('');
   const [assetProvider, setAssetProvider] = useState('');
   const [assetCriticality, setAssetCriticality] = useState<Criticality>('media');
+
+  // Form Services & Dependencies
+  const [svcCode, setSvcCode] = useState('');
+  const [svcName, setSvcName] = useState('');
+  const [svcDomain, setSvcDomain] = useState('ti');
+  const [svcCriticality, setSvcCriticality] = useState<Criticality>('alta');
+  const [svcOwner, setSvcOwner] = useState('');
+  const [svcSla, setSvcSla] = useState('99.9');
+
+  const [depKind, setDepKind] = useState<'asset' | 'service'>('asset');
+  const [depAssetId, setDepAssetId] = useState('');
+  const [depUpstreamSvcId, setDepUpstreamSvcId] = useState('');
+  const [depRole, setDepRole] = useState<'primary' | 'redundant' | 'supporting'>('primary');
 
   // Form Topology Edge
   const [edgeSourceId, setEdgeSourceId] = useState('');
@@ -62,18 +82,31 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
   const [edgeCapacity, setEdgeCapacity] = useState('');
   const [edgeRedundant, setEdgeRedundant] = useState(false);
 
-  // Form Concessões / Tipos
+  // Form Concessões / Tipos / Categorias Extensíveis
   const [concName, setConcName] = useState('');
   const [concCode, setConcCode] = useState('');
   const [concRegion, setConcRegion] = useState('');
   const [locCode, setLocCode] = useState('');
   const [locLabel, setLocLabel] = useState('');
+  const [catCode, setCatCode] = useState('');
+  const [catLabel, setCatLabel] = useState('');
+  const [catDomain, setCatDomain] = useState('ti');
+
+  async function loadServiceDeps(svcId: string) {
+    if (!svcId) {
+      setServiceDeps([]);
+      return;
+    }
+    const res = await apiRequest<{ dependencies: ServiceDependency[] }>(`/api/services/${svcId}/dependencies`);
+    setServiceDeps(res.dependencies);
+  }
 
   async function loadAll() {
     if (!activeTenantId) return;
-    const [sRes, aRes, tRes, cRes, lRes, catRes] = await Promise.all([
+    const [sRes, aRes, svRes, tRes, cRes, lRes, catRes] = await Promise.all([
       apiRequest<{ sites: Site[] }>('/api/sites'),
       apiRequest<{ assets: Asset[] }>('/api/assets'),
+      apiRequest<{ services: Array<ServiceEntity & { dependency_count?: number }> }>('/api/services'),
       apiRequest<{ edges: TopologyEdge[]; shared_upstream_dependencies: Array<{ upstream_asset_id: string; downstream_count: number }> }>('/api/topology/edges'),
       apiRequest<{ concessions: Concession[] }>('/api/concessions'),
       apiRequest<{ locality_types: LocalityType[] }>('/api/locality-types'),
@@ -81,11 +114,20 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
     ]);
     setSites(sRes.sites);
     setAssets(aRes.assets);
+    setServices(svRes.services);
     setEdges(tRes.edges);
     setSharedDeps(tRes.shared_upstream_dependencies);
     setConcessions(cRes.concessions);
     setLocalityTypes(lRes.locality_types);
     setCategories(catRes.asset_categories);
+
+    const activeSvc = selectedServiceId || svRes.services[0]?.id || '';
+    if (activeSvc) {
+      if (!selectedServiceId) setSelectedServiceId(activeSvc);
+      await loadServiceDeps(activeSvc);
+    } else {
+      setServiceDeps([]);
+    }
   }
 
   useEffect(() => {
@@ -182,8 +224,10 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
       await apiRequest('/api/assets', {
         method: 'POST',
         body: JSON.stringify({
-          site_id: assetSiteId,
+          site_id: assetSiteId || undefined,
           category_id: assetCategoryId || undefined,
+          domain: assetDomain,
+          georeference_mode: assetGeoMode,
           name: assetName,
           hostname: assetHost || undefined,
           ip_address: assetIp || undefined,
@@ -199,6 +243,52 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
       await loadAll();
     } catch (err) {
       setFeedback({ type: 'err', msg: err instanceof Error ? err.message : 'Erro ao cadastrar ativo.' });
+    }
+  }
+
+  async function handleCreateService(e: FormEvent) {
+    e.preventDefault();
+    setFeedback(null);
+    try {
+      const res = await apiRequest<{ service: ServiceEntity }>('/api/services', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: svcCode,
+          name: svcName,
+          domain: svcDomain,
+          criticality: svcCriticality,
+          owner_team: svcOwner || undefined,
+          sla_target_pct: svcSla ? Number(svcSla) : undefined,
+        }),
+      });
+      setSvcCode('');
+      setSvcName('');
+      setSvcOwner('');
+      setSelectedServiceId(res.service.id);
+      setFeedback({ type: 'ok', msg: 'Serviço cadastrado no catálogo híbrido.' });
+      await loadAll();
+    } catch (err) {
+      setFeedback({ type: 'err', msg: err instanceof Error ? err.message : 'Erro ao cadastrar serviço.' });
+    }
+  }
+
+  async function handleAddServiceDep(e: FormEvent) {
+    e.preventDefault();
+    if (!selectedServiceId) return;
+    setFeedback(null);
+    try {
+      await apiRequest(`/api/services/${selectedServiceId}/dependencies`, {
+        method: 'POST',
+        body: JSON.stringify({
+          asset_id: depKind === 'asset' ? depAssetId : undefined,
+          upstream_service_id: depKind === 'service' ? depUpstreamSvcId : undefined,
+          dependency_role: depRole,
+        }),
+      });
+      setFeedback({ type: 'ok', msg: 'Dependência vinculada ao serviço (validada sem ciclos).' });
+      await loadAll();
+    } catch (err) {
+      setFeedback({ type: 'err', msg: err instanceof Error ? err.message : 'Erro ao vincular dependência.' });
     }
   }
 
@@ -261,12 +351,29 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
     }
   }
 
+  async function handleCreateAssetCategory(e: FormEvent) {
+    e.preventDefault();
+    setFeedback(null);
+    try {
+      await apiRequest('/api/asset-categories', {
+        method: 'POST',
+        body: JSON.stringify({ code: catCode, label: catLabel, domain: catDomain }),
+      });
+      setCatCode('');
+      setCatLabel('');
+      setFeedback({ type: 'ok', msg: 'Categoria de ativo extensível adicionada sem alterar código.' });
+      await loadAll();
+    } catch (err) {
+      setFeedback({ type: 'err', msg: err instanceof Error ? err.message : 'Erro ao criar categoria.' });
+    }
+  }
+
   if (!activeTenantId) {
     return (
       <HonestStateBanner
         state="NOT_CONFIGURED"
         title="Selecione um tenant para gerenciar cadastros"
-        description="Sites, ativos, topologia e taxonomias são isolados por tenant."
+        description="Sites, ativos lógicos/físicos, serviços, topologia e taxonomias são isolados por tenant."
       />
     );
   }
@@ -275,19 +382,20 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h2 className="text-xl font-semibold text-slate-100">Cadastros e Topologia</h2>
+          <h2 className="text-xl font-semibold text-slate-100">Cadastros Universais, Serviços e Topologia</h2>
           <p className="text-sm text-slate-400">
-            Sites com busca de endereço por CEP, ativos monitoráveis e grafo direcionado topology_edges com prevenção de ciclos.
+            Sites com CEP, ativos com georreferenciamento opcional (TI, IoT, Redes, Energia, Clima), catálogo de serviços e grafo sem ciclos.
           </p>
         </div>
 
-        <div className="flex items-center gap-1 rounded-md border border-slate-800 bg-[#111827] p-1">
+        <div className="flex flex-wrap items-center gap-1 rounded-md border border-slate-800 bg-[#111827] p-1">
           {(
             [
               { id: 'sites', label: `Sites (${sites.length})` },
               { id: 'assets', label: `Ativos (${assets.length})` },
+              { id: 'services', label: `Serviços (${services.length})` },
               { id: 'topology', label: `Topologia (${edges.length})` },
-              { id: 'taxonomies', label: 'Concessões e Tipos' },
+              { id: 'taxonomies', label: 'Taxonomias' },
             ] as const
           ).map((t) => (
             <button
@@ -540,23 +648,53 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
       {subTab === 'assets' && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <form onSubmit={handleCreateAsset} className="space-y-3 rounded-lg border border-slate-800 bg-[#111827] p-5">
-            <h3 className="text-sm font-semibold text-slate-100">Novo Ativo de Infraestrutura</h3>
+            <h3 className="text-sm font-semibold text-slate-100">Novo Ativo Universal (TI, Rede, IoT, Energia)</h3>
+            <div className="grid grid-cols-2 gap-2.5">
+              <select
+                value={assetDomain}
+                onChange={(e) => setAssetDomain(e.target.value)}
+                className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+              >
+                <option value="ti">Domínio: TI</option>
+                <option value="rede">Domínio: Rede</option>
+                <option value="iot">Domínio: IoT</option>
+                <option value="energia">Domínio: Energia</option>
+                <option value="ambiente">Domínio: Ambiente</option>
+                <option value="infra">Domínio: Infra</option>
+              </select>
+              <select
+                value={assetGeoMode}
+                onChange={(e) => setAssetGeoMode(e.target.value as 'none' | 'optional' | 'required')}
+                className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+              >
+                <option value="optional">Geo: Opcional</option>
+                <option value="none">Geo: Lógico (sem site)</option>
+                <option value="required">Geo: Obrigatório</option>
+              </select>
+            </div>
+
             <select
-              required
+              required={assetGeoMode === 'required'}
               value={assetSiteId}
               onChange={(e) => setAssetSiteId(e.target.value)}
               className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
             >
-              <option value="">Selecione o Site</option>
+              <option value="">Site (opcional para ativos lógicos/TI)</option>
               {sites.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.code} — {s.name}
                 </option>
               ))}
             </select>
+
             <select
               value={assetCategoryId}
-              onChange={(e) => setAssetCategoryId(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setAssetCategoryId(val);
+                const cat = categories.find((c) => c.id === val);
+                if (cat) setAssetDomain(cat.domain);
+              }}
               className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
             >
               <option value="">Categoria (opcional)</option>
@@ -568,7 +706,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
             </select>
             <input
               required
-              placeholder="Nome do ativo (ex: RTR-CORE-01)"
+              placeholder="Nome do ativo (ex: API-CORE-01 ou GW-IOT-02)"
               value={assetName}
               onChange={(e) => setAssetName(e.target.value)}
               className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
@@ -589,7 +727,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
             </div>
             <div className="grid grid-cols-2 gap-2.5">
               <input
-                placeholder="Operadora / Provedor"
+                placeholder="Operadora / Cloud / Provedor"
                 value={assetProvider}
                 onChange={(e) => setAssetProvider(e.target.value)}
                 className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
@@ -607,8 +745,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
             </div>
             <button
               type="submit"
-              disabled={sites.length === 0}
-              className="w-full rounded-md bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              className="w-full rounded-md bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500"
             >
               Cadastrar Ativo
             </button>
@@ -618,8 +755,8 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
             <table className="w-full border-collapse text-left text-xs">
               <thead>
                 <tr className="border-b border-slate-800 text-slate-400">
-                  <th className="px-4 py-3 font-medium">Ativo</th>
-                  <th className="px-4 py-3 font-medium">Site</th>
+                  <th className="px-4 py-3 font-medium">Ativo / Domínio</th>
+                  <th className="px-4 py-3 font-medium">Site / Georreferenciamento</th>
                   <th className="px-4 py-3 font-medium">Categoria / Provedor</th>
                   <th className="px-4 py-3 font-medium">Estado Telemetria</th>
                   <th className="px-4 py-3 text-right font-medium">Ações</th>
@@ -638,14 +775,20 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-100">{a.name}</div>
                         <div className="font-mono text-[11px] text-slate-400">
-                          {a.hostname ?? '—'} · {a.ip_address ?? 'sem IP'}
+                          {a.domain} · {a.hostname ?? '—'} · {a.ip_address ?? 'sem IP'}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-300">
-                        <span className="font-mono text-[11px] text-slate-400">{a.site_code}</span> · {a.site_name}
+                        {a.site_id ? (
+                          <>
+                            <span className="font-mono text-[11px] text-slate-400">{a.site_code}</span> · {a.site_name}
+                          </>
+                        ) : (
+                          <span className="font-mono text-[11px] text-slate-500">Lógico (sem site · {a.georeference_mode})</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-slate-300">
-                        <div>{a.category_label ?? '—'}</div>
+                        <div>{a.category_label ?? a.asset_type_code ?? '—'}</div>
                         <div className="text-[11px] text-slate-400">{a.provider_name ?? '—'}</div>
                       </td>
                       <td className="px-4 py-3 font-mono text-[11px]">
@@ -683,6 +826,228 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
         </div>
       )}
 
+      {subTab === 'services' && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <form onSubmit={handleCreateService} className="space-y-3 rounded-lg border border-slate-800 bg-[#111827] p-5">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-100">
+              <Layers className="h-4 w-4 text-blue-400" aria-hidden="true" />
+              Novo Serviço de Negócio / TI
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <input
+                required
+                placeholder="Código (ex: SVC-PAGAMENTOS)"
+                value={svcCode}
+                onChange={(e) => setSvcCode(e.target.value)}
+                className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 font-mono text-xs text-slate-100"
+              />
+              <select
+                value={svcDomain}
+                onChange={(e) => setSvcDomain(e.target.value)}
+                className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+              >
+                <option value="ti">TI / Aplicação</option>
+                <option value="rede">Rede / Conectividade</option>
+                <option value="iot">Telemetria IoT</option>
+                <option value="energia">Suprimento Elétrico</option>
+              </select>
+            </div>
+            <input
+              required
+              placeholder="Nome do serviço"
+              value={svcName}
+              onChange={(e) => setSvcName(e.target.value)}
+              className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <input
+                placeholder="Time dono"
+                value={svcOwner}
+                onChange={(e) => setSvcOwner(e.target.value)}
+                className="col-span-2 rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+              />
+              <input
+                type="number"
+                step="0.01"
+                placeholder="SLA %"
+                value={svcSla}
+                onChange={(e) => setSvcSla(e.target.value)}
+                className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 font-mono text-xs text-slate-100"
+              />
+            </div>
+            <select
+              value={svcCriticality}
+              onChange={(e) => setSvcCriticality(e.target.value as Criticality)}
+              className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+            >
+              <option value="critica">Criticidade: Crítica</option>
+              <option value="alta">Criticidade: Alta</option>
+              <option value="media">Criticidade: Média</option>
+              <option value="baixa">Criticidade: Baixa</option>
+            </select>
+            <button type="submit" className="w-full rounded-md bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500">
+              Cadastrar Serviço
+            </button>
+          </form>
+
+          <div className="space-y-4 lg:col-span-2">
+            <div className="overflow-x-auto rounded-lg border border-slate-800 bg-[#111827]">
+              <table className="w-full border-collapse text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-400">
+                    <th className="px-4 py-3 font-medium">Serviço / Domínio</th>
+                    <th className="px-4 py-3 font-medium">Time / SLA</th>
+                    <th className="px-4 py-3 text-right font-medium">Dependências</th>
+                    <th className="px-4 py-3 text-right font-medium">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                  {services.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="px-4 py-8 text-center text-slate-500">
+                        Nenhum serviço cadastrado ainda.
+                      </td>
+                    </tr>
+                  ) : (
+                    services.map((sv) => (
+                      <tr
+                        key={sv.id}
+                        onClick={() => {
+                          setSelectedServiceId(sv.id);
+                          void loadServiceDeps(sv.id);
+                        }}
+                        className={`cursor-pointer hover:bg-slate-800/40 ${
+                          selectedServiceId === sv.id ? 'bg-slate-800/50' : ''
+                        }`}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-slate-100">{sv.name}</div>
+                          <div className="font-mono text-[11px] text-slate-400">
+                            {sv.code} · {sv.domain} · {sv.criticality}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-slate-300">
+                          <div>{sv.owner_team ?? '—'}</div>
+                          <div className="font-mono text-[11px] text-slate-400">
+                            {sv.sla_target_pct ? `Meta SLA: ${sv.sla_target_pct}%` : 'Sem SLA definido'}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono tabular-nums text-blue-400">
+                          {sv.dependency_count ?? 0}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void apiRequest(`/api/services/${sv.id}`, { method: 'DELETE' }).then(() => loadAll());
+                            }}
+                            className="rounded p-1.5 text-slate-400 hover:bg-slate-800 hover:text-red-400"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {selectedServiceId && (
+              <div className="space-y-3 rounded-lg border border-slate-800 bg-[#111827] p-4">
+                <div className="text-xs font-semibold text-slate-200">
+                  Dependências do Serviço Selecionado (Impacto e RCA)
+                </div>
+                <form onSubmit={handleAddServiceDep} className="grid grid-cols-1 gap-2 sm:grid-cols-4">
+                  <select
+                    value={depKind}
+                    onChange={(e) => setDepKind(e.target.value as 'asset' | 'service')}
+                    className="rounded border border-slate-700 bg-[#0B111E] px-2.5 py-1.5 text-xs text-slate-100"
+                  >
+                    <option value="asset">Depende de Ativo</option>
+                    <option value="service">Depende de Serviço Upstream</option>
+                  </select>
+
+                  {depKind === 'asset' ? (
+                    <select
+                      required
+                      value={depAssetId}
+                      onChange={(e) => setDepAssetId(e.target.value)}
+                      className="rounded border border-slate-700 bg-[#0B111E] px-2.5 py-1.5 text-xs text-slate-100 sm:col-span-2"
+                    >
+                      <option value="">Selecione o Ativo</option>
+                      {assets.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.domain} · {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select
+                      required
+                      value={depUpstreamSvcId}
+                      onChange={(e) => setDepUpstreamSvcId(e.target.value)}
+                      className="rounded border border-slate-700 bg-[#0B111E] px-2.5 py-1.5 text-xs text-slate-100 sm:col-span-2"
+                    >
+                      <option value="">Selecione o Serviço Upstream</option>
+                      {services
+                        .filter((s) => s.id !== selectedServiceId)
+                        .map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.code} · {s.name}
+                          </option>
+                        ))}
+                    </select>
+                  )}
+
+                  <div className="flex gap-2">
+                    <select
+                      value={depRole}
+                      onChange={(e) => setDepRole(e.target.value as 'primary' | 'redundant' | 'supporting')}
+                      className="flex-1 rounded border border-slate-700 bg-[#0B111E] px-2 py-1.5 text-xs text-slate-100"
+                    >
+                      <option value="primary">primary</option>
+                      <option value="redundant">redundant</option>
+                      <option value="supporting">supporting</option>
+                    </select>
+                    <button type="submit" className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500">
+                      Vincular
+                    </button>
+                  </div>
+                </form>
+
+                <div className="divide-y divide-slate-800/80 text-xs">
+                  {serviceDeps.length === 0 ? (
+                    <div className="py-2 text-slate-500">Nenhuma dependência associada a este serviço.</div>
+                  ) : (
+                    serviceDeps.map((d) => (
+                      <div key={d.id} className="flex items-center justify-between py-2">
+                        <div>
+                          <span className="font-mono text-slate-400">{d.dependency_role}</span> ·{' '}
+                          <span className="text-slate-200">{d.asset_name ?? d.upstream_service_name}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void apiRequest(`/api/services/${selectedServiceId}/dependencies/${d.id}`, {
+                              method: 'DELETE',
+                            }).then(() => loadAll())
+                          }
+                          className="text-slate-400 hover:text-red-400"
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {subTab === 'topology' && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <form onSubmit={handleCreateEdge} className="space-y-3 rounded-lg border border-slate-800 bg-[#111827] p-5">
@@ -702,7 +1067,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
               <option value="">Origem Upstream (Pai)</option>
               {assets.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.site_code} · {a.name}
+                  {a.site_code ?? a.domain} · {a.name}
                 </option>
               ))}
             </select>
@@ -715,14 +1080,14 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
               <option value="">Destino Downstream (Filho)</option>
               {assets.map((a) => (
                 <option key={a.id} value={a.id}>
-                  {a.site_code} · {a.name}
+                  {a.site_code ?? a.domain} · {a.name}
                 </option>
               ))}
             </select>
             <div className="grid grid-cols-2 gap-2.5">
               <input
                 required
-                placeholder="Tipo (uplink_fibra, radio)"
+                placeholder="Tipo (uplink_fibra, db_conn)"
                 value={edgeType}
                 onChange={(e) => setEdgeType(e.target.value)}
                 className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 font-mono text-xs text-slate-100"
@@ -768,7 +1133,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
                     const asset = assets.find((a) => a.id === d.upstream_asset_id);
                     return (
                       <div key={d.upstream_asset_id} className="font-mono">
-                        {asset ? `${asset.site_code} · ${asset.name}` : d.upstream_asset_id} →{' '}
+                        {asset ? `${asset.site_code ?? asset.domain} · ${asset.name}` : d.upstream_asset_id} →{' '}
                         <span className="tabular-nums text-amber-300">{d.downstream_count} ativos dependentes</span>
                       </div>
                     );
@@ -829,7 +1194,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
       )}
 
       {subTab === 'taxonomies' && (
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           <div className="space-y-4 rounded-lg border border-slate-800 bg-[#111827] p-5">
             <h3 className="text-sm font-semibold text-slate-100">Concessões / Unidades de Negócio</h3>
             <div className="divide-y divide-slate-800/80">
@@ -878,7 +1243,7 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
 
           <div className="space-y-4 rounded-lg border border-slate-800 bg-[#111827] p-5">
             <h3 className="text-sm font-semibold text-slate-100">Tipos Customizáveis de Localidade</h3>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid max-h-60 grid-cols-1 gap-2 overflow-y-auto">
               {localityTypes.map((lt) => (
                 <div key={lt.id} className="rounded border border-slate-800 bg-[#0B111E] px-3 py-2 text-xs">
                   <div className="font-mono font-medium text-slate-200">{lt.code}</div>
@@ -905,6 +1270,48 @@ export function InventoryTopologyView({ activeTenantId }: InventoryTopologyViewP
               </div>
               <button type="submit" className="rounded bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-blue-500">
                 Adicionar Tipo
+              </button>
+            </form>
+          </div>
+
+          <div className="space-y-4 rounded-lg border border-slate-800 bg-[#111827] p-5">
+            <h3 className="text-sm font-semibold text-slate-100">Categorias Extensíveis de Ativos</h3>
+            <div className="grid max-h-60 grid-cols-1 gap-2 overflow-y-auto">
+              {categories.map((cat) => (
+                <div key={cat.id} className="rounded border border-slate-800 bg-[#0B111E] px-3 py-2 text-xs">
+                  <div className="font-mono font-medium text-slate-200">
+                    {cat.domain} · {cat.code}
+                  </div>
+                  <div className="text-slate-400">{cat.label}</div>
+                </div>
+              ))}
+            </div>
+            <form onSubmit={handleCreateAssetCategory} className="space-y-2.5 border-t border-slate-800 pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <input
+                  required
+                  placeholder="Código (ex: plc_scada)"
+                  value={catCode}
+                  onChange={(e) => setCatCode(e.target.value)}
+                  className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 font-mono text-xs text-slate-100"
+                />
+                <input
+                  required
+                  placeholder="Domínio (ex: iot, ti, industrial)"
+                  value={catDomain}
+                  onChange={(e) => setCatDomain(e.target.value)}
+                  className="rounded border border-slate-700 bg-[#0B111E] px-3 py-2 font-mono text-xs text-slate-100"
+                />
+              </div>
+              <input
+                required
+                placeholder="Rótulo da categoria"
+                value={catLabel}
+                onChange={(e) => setCatLabel(e.target.value)}
+                className="w-full rounded border border-slate-700 bg-[#0B111E] px-3 py-2 text-xs text-slate-100"
+              />
+              <button type="submit" className="rounded bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-blue-500">
+                Adicionar Categoria Extensível
               </button>
             </form>
           </div>

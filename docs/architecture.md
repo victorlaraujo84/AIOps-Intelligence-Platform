@@ -1,14 +1,30 @@
-# Arquitetura — AIOps Intelligence Platform
+# Arquitetura Alvo Híbrida — AIOps Intelligence Platform
 
-## 1. Visão Lógica
+## 1. Visão Geral (Observabilidade Universal Multidomínio)
+A plataforma evoluiu de monitoramento exclusivamente georreferenciado de infraestrutura/energia/clima para uma **arquitetura híbrida multidomínio** cobrindo:
+- **TI:** servidores, VMs, bancos de dados, APIs e serviços de negócio (`georeference_mode: none | optional`).
+- **Redes / Telecom:** roteadores, switches, firewalls, OLTs, enlaces de fibra/rádio e conectores externos (Zabbix, PRTG, SLAview).
+- **IoT:** gateways e sensores de campo via MQTT/TLS, HTTP e webhooks autenticados.
+- **Energia:** UPS/nobreaks, retificadores, geradores e eventos de concessionária.
+- **Ambiente / Clima:** estações meteorológicas, Open-Meteo (real), INMET e CEMADEN.
 
-- **Frontend (`src/`):** React 19, TypeScript, Tailwind CSS v4, Leaflet (OpenStreetMap / CartoDB Dark Matter / Esri Satélite).
-- **Runtime Web / API (`server.ts` + `src/server/`):** Express com sessões HMAC-SHA256 em cookies `httpOnly`, hashing de senhas com `scrypt` + `timingSafeEqual`, criptografia AES-256-GCM para credenciais de conectores, proteção anti-SSRF em URLs externas e persistência relacional em SQLite (para execução imediata em Node/AI Studio) alinhada ao schema PostgreSQL/PostGIS.
-- **Serviços Python (`services/` e `backtesting/`):** FastAPI + Pydantic, módulos de ingestão, correlação/RCA, feature engine anti-leakage, treinamento local LightGBM/XGBoost/SHAP e adaptadores opcionais de IA.
-- **Persistência Alvo de Produção (`infra/migrations/001_initial_schema.sql`):** PostgreSQL 16 + PostGIS com Row-Level Security (RLS) ativada em todas as tabelas pertencentes a tenants.
+## 2. Fluxo Lógico de Ingestão e Armazenamento Separado
+1. **Conectores Externos (`src/server/integrations.ts`):**
+   - Catálogo extensível (`GET /api/integrations/catalog`) sem enums rígidos no banco.
+   - `Open-Meteo` emite eventos climáticos em `canonical_events` e séries numéricas normalizadas (`°C`, `mm`, `km/h`, `hPa`) em `metric_samples`.
+   - `Telcomanager SLAview` permanece explicitamente marcado como `PENDING_EXTERNAL_SPEC` / `NOT_CONFIGURED` até confirmação de documentação oficial, URL, versão e autenticação.
+   - Ingestão CSV histórica é incremental por lotes com `ingestion_checkpoints` (`rows_processed`, `bytes_processed`, retomada sem duplicação).
+2. **Coleta Nativa Autorizada (`src/server/collection.ts` & `services/ingestion/native_collectors.py`):**
+   - Suporta `snmp_v3`, `mqtt`, `icmp`, `otlp` e `http_agent`.
+   - Qualquer ingestão nativa ou OTLP (`/api/collection/native/ingest`, `/api/collection/otlp/v1/*`) exige correspondência em `authorized_collection_scopes` ativo do tenant; tentativas fora de escopo são bloqueadas com HTTP `403` e registradas em `audit_logs` (`UNAUTHORIZED_COLLECTION_TARGET`).
+   - Wildcards irrestritos (`*`) são bloqueados.
+3. **Separação de Dados Operacionais:**
+   - **Métricas (Séries Temporais):** `metric_samples` (unidade, qualidade, timestamp UTC, `idempotency_key`).
+   - **Logs Operacionais:** `operational_logs` (`severity`, `trace_id`, `attributes_json`).
+   - **Eventos Canônicos:** `canonical_events` (mudanças de estado, alertas e previsões com `forecast_issued_at_utc`).
+   - **Anomalias Estatísticas:** `anomaly_detections` (Z-Score com mínimo estrito de `>= 5` amostras válidas anteriores).
+   - **Incidentes e RCA:** `incidents` + `incident_events` com `impacted_services_count` calculado via `topology_edges` e `service_dependencies`.
 
-## 2. Fronteiras de Segurança
-
-1. Todo usuário não `super_admin` tem `tenant_id` fixo no registro do usuário; qualquer tentativa de sobrescrever `tenant_id` via query string, header `X-Tenant-Id` ou body retorna `403 Forbidden` e grava evento `CROSS_TENANT_ACCESS_DENIED` em `audit_logs`.
-2. `super_admin` só alterna de tenant via `POST /api/auth/switch-tenant`, persistido na sessão do servidor e auditado em `SUPER_ADMIN_TENANT_SWITCH`.
-3. Conectores configuráveis passam por `validateExternalUrl` bloqueando IPs privados (`10.0.0.0/8`, `127.0.0.0/8`, `169.254.0.0/16`, `172.16.0.0/12`, `192.168.0.0/16`, `::1`, `fc00::/7`), domínios `.local`/`.internal` e esquemas não HTTP(S).
+## 3. Persistência e Estratégia de Produção
+- **Preview / SQLite:** `data/aiops.db` com WAL, chaves estrangeiras ativas e motor de migração versionado (`src/server/migrations.ts`, backup automático antes de evoluções).
+- **Alvo Produção / PostgreSQL + PostGIS:** `infra/migrations/001_init_postgres.sql` e `002_hybrid_observability.sql`, com **Row-Level Security (RLS)** por `tenant_id` e particionamento mensal por `observed_at_utc` para `metric_samples` e `operational_logs` (sem necessidade de TimescaleDB obrigatório na partida, preservando simplicidade operacional; Redis reservado apenas para fila/rate-limiting distribuído quando houver múltiplos workers).

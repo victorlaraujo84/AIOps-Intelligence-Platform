@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { findSharedUpstreamDependencies, wouldCreateTopologyCycle } from '../../src/server/topology.ts';
+import {
+  collectConnectedAssets,
+  findSharedUpstreamDependencies,
+  wouldCreateServiceCycle,
+  wouldCreateTopologyCycle,
+} from '../../src/server/topology.ts';
 
 test('detecta auto-ciclo e ciclo multi-salto em topology_edges', () => {
   const edges = [
@@ -13,6 +18,27 @@ test('detecta auto-ciclo e ciclo multi-salto em topology_edges', () => {
   assert.equal(wouldCreateTopologyCycle(edges, 'B', 'A'), true);
   assert.equal(wouldCreateTopologyCycle(edges, 'C', 'D'), false);
   assert.equal(wouldCreateTopologyCycle(edges, 'A', 'C'), false); // redundância DAG válida
+});
+
+test('detecta ciclo em dependências de serviços (service_dependencies)', () => {
+  const deps = [
+    { service_id: 'SVC-APP', upstream_service_id: 'SVC-DB' },
+    { service_id: 'SVC-DB', upstream_service_id: 'SVC-AUTH' },
+  ];
+
+  assert.equal(wouldCreateServiceCycle(deps, 'SVC-APP', 'SVC-APP'), true);
+  assert.equal(wouldCreateServiceCycle(deps, 'SVC-AUTH', 'SVC-APP'), true);
+  assert.equal(wouldCreateServiceCycle(deps, 'SVC-PORTAL', 'SVC-APP'), false);
+});
+
+test('coleta ativos upstream e downstream conectados', () => {
+  const edges = [
+    { source_asset_id: 'CORE', target_asset_id: 'DIST' },
+    { source_asset_id: 'DIST', target_asset_id: 'APP' },
+  ];
+  const connected = collectConnectedAssets(edges, 'DIST');
+  assert.deepEqual(connected.upstream, ['CORE']);
+  assert.deepEqual(connected.downstream, ['APP']);
 });
 
 test('identifica dependências upstream compartilhadas', () => {

@@ -25,6 +25,7 @@ import { IntegrationsView } from './components/IntegrationsView.tsx';
 import { IncidentsRcaView } from './components/IncidentsRcaView.tsx';
 import { MlGovernanceView } from './components/MlGovernanceView.tsx';
 import { ReportsAuditAiView } from './components/ReportsAuditAiView.tsx';
+import { HealthStatusBadge } from './components/HealthStatusBadge.tsx';
 
 type NavTab =
   | 'overview'
@@ -238,6 +239,8 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
+            <HealthStatusBadge />
+
             {user.role === 'super_admin' && tenants.length > 0 && (
               <select
                 aria-label="Selecionar tenant ativo"

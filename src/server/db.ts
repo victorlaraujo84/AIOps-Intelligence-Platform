@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { runSqliteMigrations } from './migrations.ts';
 
 export function openDatabase(dbPath: string): Database.Database {
   const dir = path.dirname(dbPath);
@@ -13,6 +14,7 @@ export function openDatabase(dbPath: string): Database.Database {
   db.pragma('foreign_keys = ON');
   db.pragma('journal_mode = WAL');
   initSchema(db);
+  runSqliteMigrations(db, dbPath);
   return db;
 }
 
@@ -96,7 +98,7 @@ export function initSchema(db: Database.Database): void {
       tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
       code TEXT NOT NULL,
       label TEXT NOT NULL,
-      domain TEXT NOT NULL CHECK (domain IN ('rede', 'energia', 'infra', 'sensor')),
+      domain TEXT NOT NULL DEFAULT 'infra',
       created_at_utc TEXT NOT NULL,
       UNIQUE (tenant_id, code)
     );
@@ -104,8 +106,11 @@ export function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS assets (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      site_id TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+      site_id TEXT REFERENCES sites(id) ON DELETE SET NULL,
       category_id TEXT REFERENCES asset_categories(id) ON DELETE SET NULL,
+      asset_type_code TEXT,
+      domain TEXT NOT NULL DEFAULT 'infra',
+      georeference_mode TEXT NOT NULL DEFAULT 'optional' CHECK (georeference_mode IN ('required', 'optional', 'none')),
       name TEXT NOT NULL,
       hostname TEXT,
       ip_address TEXT,
@@ -116,6 +121,7 @@ export function initSchema(db: Database.Database): void {
       topology_parent_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
       criticality TEXT NOT NULL DEFAULT 'media' CHECK (criticality IN ('critica', 'alta', 'media', 'baixa')),
       operational_state TEXT NOT NULL DEFAULT 'NO_DATA' CHECK (operational_state IN ('NO_DATA', 'UP', 'DEGRADED', 'DOWN', 'MAINTENANCE')),
+      metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at_utc TEXT NOT NULL,
       updated_at_utc TEXT NOT NULL
     );
@@ -136,7 +142,7 @@ export function initSchema(db: Database.Database): void {
     CREATE TABLE IF NOT EXISTS connectors (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
-      connector_type TEXT NOT NULL CHECK (connector_type IN ('open_meteo', 'inmet', 'cemaden', 'zabbix', 'prtg', 'snmp_trap', 'energy_ups', 'webhook_csv')),
+      connector_type TEXT NOT NULL,
       name TEXT NOT NULL,
       endpoint_url TEXT,
       auth_mode TEXT NOT NULL DEFAULT 'none' CHECK (auth_mode IN ('none', 'api_key', 'bearer', 'basic')),
@@ -193,10 +199,11 @@ export function initSchema(db: Database.Database): void {
       title TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'ACKNOWLEDGED', 'RESOLVED')),
       severity TEXT NOT NULL DEFAULT 'MEDIA' CHECK (severity IN ('CRITICA', 'ALTA', 'MEDIA', 'BAIXA')),
-      rca_category TEXT NOT NULL DEFAULT 'desconhecida' CHECK (rca_category IN ('eletrica', 'climatica_direta', 'composta', 'telecom_outros', 'desconhecida')),
+      impacted_services_count INTEGER NOT NULL DEFAULT 0,
+      rca_category TEXT NOT NULL DEFAULT 'desconhecida',
       rca_confidence REAL,
       rca_evidence_json TEXT NOT NULL DEFAULT '[]',
-      rule_version TEXT NOT NULL DEFAULT 'rca-rules-v1.0',
+      rule_version TEXT NOT NULL DEFAULT 'rca-rules-v2.0',
       human_reviewed_by TEXT REFERENCES users(id) ON DELETE SET NULL,
       human_reviewed_at_utc TEXT,
       opened_at_utc TEXT NOT NULL,
@@ -254,18 +261,24 @@ const DEFAULT_LOCALITY_TYPES: Array<{ code: string; label: string; description: 
   { code: 'SUBESTACAO', label: 'Subestação Elétrica', description: 'Subestação de energia ou média tensão' },
   { code: 'TORRE_RADIO', label: 'Torre / Rádio Enlace', description: 'Repetidora, torre de telecom ou rádio enlace' },
   { code: 'CENTRO_DIST', label: 'Centro de Distribuição', description: 'Centro logístico ou operacional' },
+  { code: 'DATACENTER_CLOUD', label: 'Datacenter / Região Cloud', description: 'Ambiente lógico ou datacenter TI' },
 ];
 
-const DEFAULT_ASSET_CATEGORIES: Array<{ code: string; label: string; domain: 'rede' | 'energia' | 'infra' | 'sensor' }> = [
+const DEFAULT_ASSET_CATEGORIES: Array<{ code: string; label: string; domain: string }> = [
   { code: 'router', label: 'Roteador', domain: 'rede' },
   { code: 'switch', label: 'Switch', domain: 'rede' },
   { code: 'firewall', label: 'Firewall', domain: 'rede' },
-  { code: 'server', label: 'Servidor', domain: 'infra' },
   { code: 'radio_link', label: 'Rádio Enlace', domain: 'rede' },
   { code: 'olt', label: 'OLT GPON', domain: 'rede' },
   { code: 'access_point', label: 'Access Point', domain: 'rede' },
+  { code: 'server', label: 'Servidor / VM', domain: 'ti' },
+  { code: 'database', label: 'Banco de Dados', domain: 'ti' },
+  { code: 'application_node', label: 'Aplicação / API', domain: 'ti' },
+  { code: 'iot_gateway', label: 'Gateway IoT', domain: 'iot' },
+  { code: 'iot_sensor', label: 'Sensor IoT', domain: 'iot' },
   { code: 'ups', label: 'UPS / Nobreak', domain: 'energia' },
   { code: 'generator', label: 'Grupo Gerador', domain: 'energia' },
+  { code: 'weather_station', label: 'Estação Ambiental', domain: 'ambiente' },
 ];
 
 /**

@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -44,3 +44,54 @@ class CanonicalEventContract(BaseModel):
         if "forecast" in self.event_type.lower() and self.forecast_issued_at_utc is None:
             raise ValueError("forecast_issued_at_utc é obrigatório para registros de previsão.")
         return self
+
+
+class MetricSampleContract(BaseModel):
+    tenant_id: UUID
+    asset_id: Optional[UUID] = None
+    service_id: Optional[UUID] = None
+    site_id: Optional[UUID] = None
+    idempotency_key: str = Field(min_length=1)
+    metric_name: str = Field(min_length=1)
+    value_num: float
+    unit: str = Field(min_length=1)
+    observed_at_utc: datetime
+    ingested_at_utc: datetime
+    source: str = Field(min_length=1)
+    quality_flag: Literal["VALID", "STALE", "SUSPECT", "UNVERIFIED_COORDS"] = "VALID"
+    tags: dict[str, Any] = Field(default_factory=dict)
+
+
+class OperationalLogContract(BaseModel):
+    tenant_id: UUID
+    asset_id: Optional[UUID] = None
+    service_id: Optional[UUID] = None
+    site_id: Optional[UUID] = None
+    idempotency_key: str = Field(min_length=1)
+    severity: Literal["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+    message: str = Field(min_length=1)
+    observed_at_utc: datetime
+    ingested_at_utc: datetime
+    source: str = Field(min_length=1)
+    trace_id: Optional[str] = None
+    attributes: dict[str, Any] = Field(default_factory=dict)
+
+
+class ServiceContract(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    criticality: Literal["critica", "alta", "media", "baixa"] = "alta"
+    sla_target_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+
+
+class AuthorizedCollectionScopeContract(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    protocol: Literal["snmp_v3", "mqtt", "icmp", "otlp", "http_agent"]
+    target_cidr_or_host: str = Field(min_length=1)
+    port: Optional[int] = Field(default=None, ge=1, le=65535)
+    rate_limit_rpm: int = Field(default=60, ge=1, le=600)
+    is_active: bool = True

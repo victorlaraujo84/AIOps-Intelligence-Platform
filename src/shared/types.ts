@@ -13,7 +13,12 @@ export type RcaCategory =
   | 'climatica_direta'
   | 'composta'
   | 'telecom_outros'
+  | 'ti_aplicacao'
+  | 'iot_sensor'
   | 'desconhecida';
+
+// Tipos extensíveis: aceita domínios padrão e domínios customizados por tenant
+export type DomainType = 'ti' | 'rede' | 'iot' | 'energia' | 'ambiente' | 'infra' | (string & {});
 
 export type ConnectorType =
   | 'open_meteo'
@@ -21,9 +26,15 @@ export type ConnectorType =
   | 'cemaden'
   | 'zabbix'
   | 'prtg'
+  | 'slaview'
+  | 'snmp_v3'
   | 'snmp_trap'
+  | 'mqtt'
+  | 'icmp'
+  | 'otlp'
   | 'energy_ups'
-  | 'webhook_csv';
+  | 'webhook_csv'
+  | (string & {});
 
 export type AiAgentMode = 'offline' | 'openai' | 'ollama';
 
@@ -98,19 +109,22 @@ export interface AssetCategory {
   tenant_id: string;
   code: string;
   label: string;
-  domain: 'rede' | 'energia' | 'infra' | 'sensor';
+  domain: DomainType;
   created_at_utc: string;
 }
 
 export interface Asset {
   id: string;
   tenant_id: string;
-  site_id: string;
-  site_name?: string;
-  site_code?: string;
+  site_id: string | null;
+  site_name?: string | null;
+  site_code?: string | null;
   category_id: string | null;
   category_code?: string | null;
   category_label?: string | null;
+  asset_type_code: string | null;
+  domain: DomainType;
+  georeference_mode: 'required' | 'optional' | 'none';
   name: string;
   hostname: string | null;
   ip_address: string | null;
@@ -121,8 +135,38 @@ export interface Asset {
   topology_parent_id: string | null;
   criticality: Criticality;
   operational_state: 'NO_DATA' | 'UP' | 'DEGRADED' | 'DOWN' | 'MAINTENANCE';
+  metadata_json?: Record<string, unknown>;
   created_at_utc: string;
   updated_at_utc: string;
+}
+
+export interface ServiceEntity {
+  id: string;
+  tenant_id: string;
+  code: string;
+  name: string;
+  domain: DomainType;
+  criticality: Criticality;
+  owner_team: string | null;
+  sla_target_pct: number | null;
+  operational_state: 'NO_DATA' | 'UP' | 'DEGRADED' | 'DOWN' | 'MAINTENANCE';
+  description: string | null;
+  created_at_utc: string;
+  updated_at_utc: string;
+}
+
+export interface ServiceDependency {
+  id: string;
+  tenant_id: string;
+  service_id: string;
+  asset_id: string | null;
+  upstream_service_id: string | null;
+  service_name?: string;
+  asset_name?: string | null;
+  upstream_service_name?: string | null;
+  dependency_role: 'primary' | 'redundant' | 'supporting';
+  weight: number;
+  created_at_utc: string;
 }
 
 export interface TopologyEdge {
@@ -132,8 +176,8 @@ export interface TopologyEdge {
   target_asset_id: string;
   source_asset_name?: string;
   target_asset_name?: string;
-  source_site_id?: string;
-  target_site_id?: string;
+  source_site_id?: string | null;
+  target_site_id?: string | null;
   link_type: string;
   provider_name: string | null;
   capacity_mbps: number | null;
@@ -172,6 +216,87 @@ export interface ConnectorSyncRun {
   error_message: string | null;
 }
 
+export interface IngestionCheckpoint {
+  id: string;
+  tenant_id: string;
+  connector_id: string;
+  cursor_key: string;
+  cursor_value: string;
+  rows_processed: number;
+  bytes_processed: number;
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  updated_at_utc: string;
+}
+
+export interface AuthorizedCollectionScope {
+  id: string;
+  tenant_id: string;
+  protocol: 'snmp_v3' | 'mqtt' | 'icmp' | 'otlp' | 'http_agent';
+  target_cidr_or_host: string;
+  port: number | null;
+  description: string | null;
+  rate_limit_rpm: number;
+  is_active: boolean;
+  approved_by: string | null;
+  approved_at_utc: string;
+}
+
+export interface MetricSample {
+  id: string;
+  tenant_id: string;
+  asset_id: string | null;
+  asset_name?: string | null;
+  service_id: string | null;
+  service_name?: string | null;
+  site_id: string | null;
+  site_code?: string | null;
+  connector_id: string | null;
+  idempotency_key: string;
+  metric_name: string;
+  value_num: number;
+  unit: string;
+  observed_at_utc: string;
+  ingested_at_utc: string;
+  source: string;
+  quality_flag: 'VALID' | 'STALE' | 'SUSPECT' | 'UNVERIFIED_COORDS';
+  tags_json: Record<string, unknown>;
+}
+
+export interface OperationalLog {
+  id: string;
+  tenant_id: string;
+  asset_id: string | null;
+  asset_name?: string | null;
+  service_id: string | null;
+  service_name?: string | null;
+  site_id: string | null;
+  connector_id: string | null;
+  idempotency_key: string;
+  severity: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'FATAL';
+  message: string;
+  observed_at_utc: string;
+  ingested_at_utc: string;
+  source: string;
+  trace_id: string | null;
+  attributes_json: Record<string, unknown>;
+}
+
+export interface AnomalyDetection {
+  id: string;
+  tenant_id: string;
+  asset_id: string | null;
+  asset_name?: string | null;
+  service_id: string | null;
+  metric_name: string;
+  observed_value: number;
+  baseline_mean: number;
+  baseline_stddev: number;
+  z_score: number;
+  severity: 'ALTA' | 'MEDIA';
+  detected_at_utc: string;
+  status: 'OPEN' | 'ACKNOWLEDGED' | 'DISMISSED';
+}
+
 export interface CanonicalEvent {
   id: string;
   tenant_id: string;
@@ -204,6 +329,7 @@ export interface Incident {
   title: string;
   status: 'OPEN' | 'ACKNOWLEDGED' | 'RESOLVED';
   severity: 'CRITICA' | 'ALTA' | 'MEDIA' | 'BAIXA';
+  impacted_services_count?: number;
   rca_category: RcaCategory;
   rca_confidence: number | null;
   rca_evidence: string[];
@@ -241,6 +367,13 @@ export interface AiAgentConfig {
   updated_at_utc: string | null;
 }
 
+export interface IncidentTrendPoint {
+  hour_utc: string;
+  label: string;
+  opened: number;
+  resolved: number;
+}
+
 export interface NocOverviewResponse {
   tenant: Tenant | null;
   metrics: {
@@ -248,13 +381,20 @@ export interface NocOverviewResponse {
     sites_verified_coords: number;
     sites_pending_coords: number;
     assets_total: number;
+    assets_ungeoreferenced: number;
+    services_total: number;
     topology_edges_total: number;
     connectors_total: number;
     connectors_healthy: number;
     connectors_error: number;
     events_24h: number;
+    metrics_24h: number;
+    logs_24h: number;
+    anomalies_open: number;
     incidents_open: number;
   };
+  incidents_trend_24h: IncidentTrendPoint[];
+  domain_breakdown: Array<{ domain: string; assets_count: number; services_count: number }>;
   honest_states: {
     telemetry_status: HonestState | 'ACTIVE';
     incidents_status: HonestState | 'ACTIVE';
@@ -265,6 +405,7 @@ export interface NocOverviewResponse {
   provenance: {
     tenant_id: string;
     window: string;
+    domain_filter: string;
     computed_at_utc: string;
     source: string;
   };

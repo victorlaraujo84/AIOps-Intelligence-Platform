@@ -15,6 +15,7 @@ interface MlStatusPayload {
   shadow_mode_enforced: boolean;
   dataset_summary: {
     canonical_events_count: number;
+    metric_samples_count: number;
     incidents_count: number;
     minimum_events_recommended_for_split: number;
   };
@@ -108,7 +109,7 @@ export function MlGovernanceView({ activeTenantId, initialSection }: MlGovernanc
         }
         description={
           data
-            ? `Dataset real atual do tenant: ${data.dataset_summary.canonical_events_count} eventos canônicos e ${data.dataset_summary.incidents_count} incidentes. ${data.execution_note}`
+            ? `Dataset real atual do tenant: ${data.dataset_summary.metric_samples_count} amostras de métricas, ${data.dataset_summary.canonical_events_count} eventos canônicos e ${data.dataset_summary.incidents_count} incidentes. ${data.execution_note}`
             : 'Carregando metadados reais do dataset do tenant...'
         }
         provenance={`shadow_mode=ENFORCED · tenant=${activeTenantId}`}

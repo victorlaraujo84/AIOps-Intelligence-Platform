@@ -1,15 +1,22 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
 import express, { type NextFunction, type Request, type Response } from 'express';
+import { isTargetAuthorizedInScope, type CollectionProtocol } from './collection.ts';
 import { initializeTenantTaxonomy, openDatabase, writeAuditLog } from './db.ts';
 import {
+  CONNECTOR_CATALOG,
   geocodeAddressNominatim,
   ingestCanonicalEvents,
+  ingestCsvIncrementalWithCheckpoint,
+  ingestMetricSamples,
+  ingestOperationalLogs,
   lookupCepAddress,
   syncOpenMeteoForTenant,
   testConnectorConnectivity,
   type ConnectorRow,
   type IngestEventInput,
+  type IngestLogInput,
+  type IngestMetricInput,
 } from './integrations.ts';
 import {
   encryptCredentials,
@@ -20,7 +27,11 @@ import {
   validateExternalUrl,
   verifyPassword,
 } from './security.ts';
-import { findSharedUpstreamDependencies, wouldCreateTopologyCycle } from './topology.ts';
+import {
+  findSharedUpstreamDependencies,
+  wouldCreateServiceCycle,
+  wouldCreateTopologyCycle,
+} from './topology.ts';
 import type { AuthUser, RcaCategory, Role } from '../shared/types.ts';
 
 interface AuthenticatedRequest extends Request {
@@ -770,8 +781,12 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       return;
     }
     const { code, label, domain } = req.body ?? {};
-    if (!code || !label || !['rede', 'energia', 'infra', 'sensor'].includes(String(domain))) {
-      res.status(400).json({ error: 'Código, rótulo e domínio válido (rede|energia|infra|sensor) são obrigatórios.' });
+    const cleanDomain = String(domain || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_');
+    if (!code || !label || !cleanDomain) {
+      res.status(400).json({ error: 'Código, rótulo e domínio válido (ex: ti, rede, iot, energia, ambiente) são obrigatórios.' });
       return;
     }
     const cleanCode = String(code).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -784,7 +799,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     const now = new Date().toISOString();
     db.prepare(
       `INSERT INTO asset_categories (id, tenant_id, code, label, domain, created_at_utc) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(id, tenantId, cleanCode, String(label).trim(), String(domain), now);
+    ).run(id, tenantId, cleanCode, String(label).trim(), cleanDomain, now);
     res.status(201).json({ asset_category: db.prepare('SELECT * FROM asset_categories WHERE id = ?').get(id) });
   });
 
@@ -1018,18 +1033,33 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
 
   app.get('/api/assets', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
     const tenantId = req.resolvedTenantId!;
-    const rows = db
-      .prepare(
-        `SELECT a.*, s.name AS site_name, s.code AS site_code,
+    const domainFilter = typeof req.query.domain === 'string' && req.query.domain !== 'all' ? req.query.domain.trim() : null;
+
+    const sql = domainFilter
+      ? `SELECT a.*, s.name AS site_name, s.code AS site_code,
                 ac.code AS category_code, ac.label AS category_label
          FROM assets a
-         JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id
+         LEFT JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id
+         LEFT JOIN asset_categories ac ON ac.id = a.category_id AND ac.tenant_id = a.tenant_id
+         WHERE a.tenant_id = ? AND a.domain = ?
+         ORDER BY COALESCE(s.code, 'SEM_SITE') ASC, a.name ASC`
+      : `SELECT a.*, s.name AS site_name, s.code AS site_code,
+                ac.code AS category_code, ac.label AS category_label
+         FROM assets a
+         LEFT JOIN sites s ON s.id = a.site_id AND s.tenant_id = a.tenant_id
          LEFT JOIN asset_categories ac ON ac.id = a.category_id AND ac.tenant_id = a.tenant_id
          WHERE a.tenant_id = ?
-         ORDER BY s.code ASC, a.name ASC`,
-      )
-      .all(tenantId);
-    res.json({ assets: rows });
+         ORDER BY COALESCE(s.code, 'SEM_SITE') ASC, a.name ASC`;
+
+    const rows = (domainFilter ? db.prepare(sql).all(tenantId, domainFilter) : db.prepare(sql).all(tenantId)) as Array<
+      Record<string, unknown>
+    >;
+    res.json({
+      assets: rows.map((r) => ({
+        ...r,
+        metadata_json: JSON.parse(String(r.metadata_json || '{}')),
+      })),
+    });
   });
 
   app.post('/api/assets', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
@@ -1042,6 +1072,9 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     const {
       site_id,
       category_id,
+      asset_type_code,
+      domain,
+      georeference_mode,
       name,
       hostname,
       ip_address,
@@ -1051,16 +1084,43 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       redundancy_group,
       topology_parent_id,
       criticality,
+      metadata_json,
     } = req.body ?? {};
 
-    if (!site_id || !name) {
-      res.status(400).json({ error: 'Site e nome do ativo são obrigatórios.' });
+    if (!name || String(name).trim().length === 0) {
+      res.status(400).json({ error: 'Nome do ativo é obrigatório.' });
       return;
     }
 
-    if (!db.prepare('SELECT id FROM sites WHERE id = ? AND tenant_id = ?').get(site_id, tenantId)) {
+    const cleanGeoMode: 'required' | 'optional' | 'none' = ['required', 'optional', 'none'].includes(String(georeference_mode))
+      ? (String(georeference_mode) as 'required' | 'optional' | 'none')
+      : site_id
+        ? 'required'
+        : 'none';
+
+    if (cleanGeoMode === 'required' && !site_id) {
+      res.status(400).json({ error: 'Ativos com georeference_mode=required exigem um site_id.' });
+      return;
+    }
+
+    if (site_id && !db.prepare('SELECT id FROM sites WHERE id = ? AND tenant_id = ?').get(site_id, tenantId)) {
       res.status(400).json({ error: 'Site informado não pertence a este tenant.' });
       return;
+    }
+
+    let resolvedCategoryCode: string | null = asset_type_code ? String(asset_type_code).trim().toLowerCase() : null;
+    let resolvedDomain: string = domain ? String(domain).trim().toLowerCase() : 'infra';
+
+    if (category_id) {
+      const cat = db
+        .prepare('SELECT id, code, domain FROM asset_categories WHERE id = ? AND tenant_id = ?')
+        .get(category_id, tenantId) as { id: string; code: string; domain: string } | undefined;
+      if (!cat) {
+        res.status(400).json({ error: 'Categoria informada não pertence a este tenant.' });
+        return;
+      }
+      resolvedCategoryCode = resolvedCategoryCode ?? cat.code;
+      if (!domain) resolvedDomain = cat.domain;
     }
 
     if (
@@ -1076,15 +1136,18 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
 
     db.prepare(
       `INSERT INTO assets (
-        id, tenant_id, site_id, category_id, name, hostname, ip_address,
-        vendor, model, provider_name, redundancy_group, topology_parent_id,
-        criticality, operational_state, created_at_utc, updated_at_utc
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NO_DATA', ?, ?)`,
+        id, tenant_id, site_id, category_id, asset_type_code, domain, georeference_mode,
+        name, hostname, ip_address, vendor, model, provider_name, redundancy_group,
+        topology_parent_id, criticality, operational_state, metadata_json, created_at_utc, updated_at_utc
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NO_DATA', ?, ?, ?)`,
     ).run(
       id,
       tenantId,
-      site_id,
+      site_id || null,
       category_id || null,
+      resolvedCategoryCode,
+      resolvedDomain,
+      cleanGeoMode,
       String(name).trim(),
       hostname ? String(hostname).trim() : null,
       ip_address ? String(ip_address).trim() : null,
@@ -1094,6 +1157,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       redundancy_group ? String(redundancy_group).trim() : null,
       topology_parent_id || null,
       ['critica', 'alta', 'media', 'baixa'].includes(String(criticality)) ? String(criticality) : 'media',
+      JSON.stringify(metadata_json && typeof metadata_json === 'object' ? metadata_json : {}),
       now,
       now,
     );
@@ -1114,7 +1178,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       action: 'ASSET_CREATED',
       resource_type: 'asset',
       resource_id: id,
-      details: { name, site_id },
+      details: { name, site_id: site_id || null, domain: resolvedDomain, georeference_mode: cleanGeoMode },
       ip_address: getClientIp(req),
     });
 
@@ -1123,13 +1187,18 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         `SELECT a.*, s.name AS site_name, s.code AS site_code,
                 ac.code AS category_code, ac.label AS category_label
          FROM assets a
-         JOIN sites s ON s.id = a.site_id
+         LEFT JOIN sites s ON s.id = a.site_id
          LEFT JOIN asset_categories ac ON ac.id = a.category_id
          WHERE a.id = ?`,
       )
-      .get(id);
+      .get(id) as Record<string, unknown>;
 
-    res.status(201).json({ asset: created });
+    res.status(201).json({
+      asset: {
+        ...created,
+        metadata_json: JSON.parse(String(created.metadata_json || '{}')),
+      },
+    });
   });
 
   app.delete('/api/assets/:id', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
@@ -1259,6 +1328,182 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     res.json({ deleted: true });
   });
 
+  // ==================== SERVICES & DEPENDENCIES ====================
+
+  app.get('/api/services', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const domainFilter = typeof req.query.domain === 'string' && req.query.domain !== 'all' ? req.query.domain.trim() : null;
+    const sql = domainFilter
+      ? `SELECT s.*,
+                (SELECT COUNT(*) FROM service_dependencies sd WHERE sd.service_id = s.id AND sd.tenant_id = s.tenant_id) AS dependency_count
+         FROM services s WHERE s.tenant_id = ? AND s.domain = ? ORDER BY s.name ASC`
+      : `SELECT s.*,
+                (SELECT COUNT(*) FROM service_dependencies sd WHERE sd.service_id = s.id AND sd.tenant_id = s.tenant_id) AS dependency_count
+         FROM services s WHERE s.tenant_id = ? ORDER BY s.name ASC`;
+    const rows = domainFilter ? db.prepare(sql).all(tenantId, domainFilter) : db.prepare(sql).all(tenantId);
+    res.json({ services: rows });
+  });
+
+  app.post('/api/services', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente para cadastrar serviços.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const { code, name, domain, criticality, owner_team, sla_target_pct, description } = req.body ?? {};
+    if (!code || !name) {
+      res.status(400).json({ error: 'Código e nome do serviço são obrigatórios.' });
+      return;
+    }
+    const cleanCode = String(code).trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '_');
+    if (db.prepare('SELECT id FROM services WHERE tenant_id = ? AND code = ?').get(tenantId, cleanCode)) {
+      res.status(409).json({ error: 'Já existe um serviço com este código neste tenant.' });
+      return;
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const cleanDomain = domain ? String(domain).trim().toLowerCase() : 'ti';
+    const cleanCrit = ['critica', 'alta', 'media', 'baixa'].includes(String(criticality)) ? String(criticality) : 'alta';
+    const sla = sla_target_pct != null && sla_target_pct !== '' ? Number(sla_target_pct) : null;
+
+    db.prepare(
+      `INSERT INTO services (
+        id, tenant_id, code, name, domain, criticality, owner_team, sla_target_pct, operational_state, description, created_at_utc, updated_at_utc
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NO_DATA', ?, ?, ?)`,
+    ).run(
+      id,
+      tenantId,
+      cleanCode,
+      String(name).trim(),
+      cleanDomain,
+      cleanCrit,
+      owner_team ? String(owner_team).trim() : null,
+      sla != null && Number.isFinite(sla) ? sla : null,
+      description ? String(description).trim() : null,
+      now,
+      now,
+    );
+
+    writeAuditLog(db, {
+      tenant_id: tenantId,
+      actor_user_id: actor.id,
+      actor_email: actor.email,
+      actor_role: actor.role,
+      action: 'SERVICE_CREATED',
+      resource_type: 'service',
+      resource_id: id,
+      details: { code: cleanCode, name, domain: cleanDomain },
+      ip_address: getClientIp(req),
+    });
+
+    res.status(201).json({ service: db.prepare('SELECT * FROM services WHERE id = ?').get(id) });
+  });
+
+  app.delete('/api/services/:id', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isAdminRole(actor.role)) {
+      res.status(403).json({ error: 'Apenas administradores podem excluir serviços.' });
+      return;
+    }
+    const info = db.prepare('DELETE FROM services WHERE id = ? AND tenant_id = ?').run(req.params.id, req.resolvedTenantId!);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Serviço não encontrado neste tenant.' });
+      return;
+    }
+    res.json({ deleted: true });
+  });
+
+  app.get('/api/services/:id/dependencies', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const svc = db.prepare('SELECT id FROM services WHERE id = ? AND tenant_id = ?').get(req.params.id, tenantId);
+    if (!svc) {
+      res.status(404).json({ error: 'Serviço não encontrado neste tenant.' });
+      return;
+    }
+    const rows = db
+      .prepare(
+        `SELECT sd.*, s.name AS service_name, a.name AS asset_name, us.name AS upstream_service_name
+         FROM service_dependencies sd
+         JOIN services s ON s.id = sd.service_id
+         LEFT JOIN assets a ON a.id = sd.asset_id AND a.tenant_id = sd.tenant_id
+         LEFT JOIN services us ON us.id = sd.upstream_service_id AND us.tenant_id = sd.tenant_id
+         WHERE sd.tenant_id = ? AND sd.service_id = ?
+         ORDER BY sd.created_at_utc DESC`,
+      )
+      .all(tenantId, req.params.id);
+    res.json({ dependencies: rows });
+  });
+
+  app.post('/api/services/:id/dependencies', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const serviceId = req.params.id;
+    const { asset_id, upstream_service_id, dependency_role, weight } = req.body ?? {};
+
+    if (!db.prepare('SELECT id FROM services WHERE id = ? AND tenant_id = ?').get(serviceId, tenantId)) {
+      res.status(404).json({ error: 'Serviço não encontrado neste tenant.' });
+      return;
+    }
+    if (!asset_id && !upstream_service_id) {
+      res.status(400).json({ error: 'Informe asset_id ou upstream_service_id para a dependência.' });
+      return;
+    }
+    if (asset_id && !db.prepare('SELECT id FROM assets WHERE id = ? AND tenant_id = ?').get(asset_id, tenantId)) {
+      res.status(400).json({ error: 'Ativo informado não pertence a este tenant.' });
+      return;
+    }
+    if (upstream_service_id) {
+      if (!db.prepare('SELECT id FROM services WHERE id = ? AND tenant_id = ?').get(upstream_service_id, tenantId)) {
+        res.status(400).json({ error: 'Serviço upstream não pertence a este tenant.' });
+        return;
+      }
+      const existingServiceDeps = db
+        .prepare('SELECT service_id, upstream_service_id FROM service_dependencies WHERE tenant_id = ? AND upstream_service_id IS NOT NULL')
+        .all(tenantId) as Array<{ service_id: string; upstream_service_id: string | null }>;
+      if (wouldCreateServiceCycle(existingServiceDeps, serviceId, String(upstream_service_id))) {
+        res.status(400).json({ error: 'Dependência rejeitada: criaria um ciclo entre serviços.' });
+        return;
+      }
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const roleVal = ['primary', 'redundant', 'supporting'].includes(String(dependency_role))
+      ? String(dependency_role)
+      : 'primary';
+    const weightVal = Number.isFinite(Number(weight)) && Number(weight) > 0 ? Number(weight) : 1.0;
+
+    db.prepare(
+      `INSERT INTO service_dependencies (
+        id, tenant_id, service_id, asset_id, upstream_service_id, dependency_role, weight, created_at_utc
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, tenantId, serviceId, asset_id || null, upstream_service_id || null, roleVal, weightVal, now);
+
+    res.status(201).json({ dependency: db.prepare('SELECT * FROM service_dependencies WHERE id = ?').get(id) });
+  });
+
+  app.delete('/api/services/:id/dependencies/:depId', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const info = db
+      .prepare('DELETE FROM service_dependencies WHERE id = ? AND service_id = ? AND tenant_id = ?')
+      .run(req.params.depId, req.params.id, req.resolvedTenantId!);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Dependência não encontrada.' });
+      return;
+    }
+    res.json({ deleted: true });
+  });
+
   // ==================== INTEGRATIONS & EVENTS ====================
 
   app.get('/api/integrations/connectors', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
@@ -1299,6 +1544,10 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     });
   });
 
+  app.get('/api/integrations/catalog', authenticate, (_req, res) => {
+    res.json({ catalog: CONNECTOR_CATALOG });
+  });
+
   app.post('/api/integrations/connectors', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
     const actor = req.authUser!;
     if (!isAdminRole(actor.role)) {
@@ -1308,8 +1557,11 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
 
     const tenantId = req.resolvedTenantId!;
     const { connector_type, name, endpoint_url, auth_mode, credentials, poll_interval_sec, config_json } = req.body ?? {};
-    const validTypes = ['open_meteo', 'inmet', 'cemaden', 'zabbix', 'prtg', 'snmp_trap', 'energy_ups', 'webhook_csv'];
-    if (!validTypes.includes(String(connector_type)) || !name) {
+    const cleanType = String(connector_type || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, '_');
+    if (!cleanType || !name) {
       res.status(400).json({ error: 'Tipo de conector válido e nome são obrigatórios.' });
       return;
     }
@@ -1325,8 +1577,11 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const encCreds = credentials ? encryptCredentials(String(credentials)) : null;
+    // SLAview permanece NOT_CONFIGURED enquanto endpoint_url real não for fornecido
     const initialStatus =
-      connector_type === 'open_meteo' || connector_type === 'webhook_csv' || endpoint_url ? 'CONFIGURED' : 'NOT_CONFIGURED';
+      cleanType === 'open_meteo' || cleanType === 'webhook_csv' || cleanType === 'otlp' || Boolean(endpoint_url)
+        ? 'CONFIGURED'
+        : 'NOT_CONFIGURED';
 
     db.prepare(
       `INSERT INTO connectors (
@@ -1574,6 +1829,432 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     res.json({ deleted: true });
   });
 
+  app.get('/api/integrations/connectors/:id/checkpoints', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const rows = db
+      .prepare('SELECT * FROM ingestion_checkpoints WHERE tenant_id = ? AND connector_id = ? ORDER BY updated_at_utc DESC')
+      .all(tenantId, req.params.id);
+    res.json({ checkpoints: rows });
+  });
+
+  app.post('/api/integrations/connectors/:id/ingest-csv', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const row = db
+      .prepare('SELECT * FROM connectors WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, tenantId) as ConnectorRow | undefined;
+
+    if (!row) {
+      res.status(404).json({ error: 'Conector não encontrado neste tenant.' });
+      return;
+    }
+
+    const { csv_text, kind, cursor_key, resume_from_checkpoint, batch_limit } = req.body ?? {};
+    const cleanKind = ['metrics', 'events', 'logs'].includes(String(kind)) ? (String(kind) as 'metrics' | 'events' | 'logs') : 'metrics';
+    if (!csv_text || !cursor_key) {
+      res.status(400).json({ error: 'Informe csv_text e cursor_key para rastreabilidade de checkpoint.' });
+      return;
+    }
+
+    try {
+      const startedAt = new Date().toISOString();
+      const summary = ingestCsvIncrementalWithCheckpoint(db, tenantId, row.id, {
+        csv_text: String(csv_text),
+        kind: cleanKind,
+        cursor_key: String(cursor_key).trim(),
+        resume_from_checkpoint: Boolean(resume_from_checkpoint ?? true),
+        batch_limit: batch_limit ? Number(batch_limit) : undefined,
+      });
+      const finishedAt = new Date().toISOString();
+      const runId = crypto.randomUUID();
+
+      db.prepare(
+        `INSERT INTO connector_sync_runs (
+          id, tenant_id, connector_id, started_at_utc, finished_at_utc, status,
+          records_ingested, records_deduplicated, latency_ms, error_message, raw_metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
+      ).run(
+        runId,
+        tenantId,
+        row.id,
+        startedAt,
+        finishedAt,
+        summary.status === 'COMPLETED' ? 'SUCCESS' : 'PARTIAL',
+        summary.ingested,
+        summary.deduplicated,
+        JSON.stringify(summary),
+      );
+
+      db.prepare(`UPDATE connectors SET status = 'HEALTHY', last_sync_at_utc = ?, last_error = NULL, updated_at_utc = ? WHERE id = ?`).run(
+        finishedAt,
+        finishedAt,
+        row.id,
+      );
+
+      writeAuditLog(db, {
+        tenant_id: tenantId,
+        actor_user_id: actor.id,
+        actor_email: actor.email,
+        actor_role: actor.role,
+        action: 'CSV_INCREMENTAL_INGESTED',
+        resource_type: 'connector',
+        resource_id: row.id,
+        details: summary,
+        ip_address: getClientIp(req),
+      });
+
+      res.status(201).json({ run_id: runId, ...summary });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Falha ao processar CSV incremental.' });
+    }
+  });
+
+  // ==================== AUTHORIZED COLLECTION SCOPES & NATIVE / OTLP ====================
+
+  app.get('/api/collection/scopes', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const rows = db
+      .prepare('SELECT * FROM authorized_collection_scopes WHERE tenant_id = ? ORDER BY approved_at_utc DESC')
+      .all(req.resolvedTenantId!) as Array<Record<string, unknown>>;
+    res.json({ scopes: rows.map((r) => ({ ...r, is_active: Boolean(r.is_active) })) });
+  });
+
+  app.post('/api/collection/scopes', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isAdminRole(actor.role)) {
+      res.status(403).json({ error: 'Apenas administradores podem aprovar escopos de coleta nativa.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const { protocol, target_cidr_or_host, port, description, rate_limit_rpm } = req.body ?? {};
+    const validProtocols: CollectionProtocol[] = ['snmp_v3', 'mqtt', 'icmp', 'otlp', 'http_agent'];
+    if (!validProtocols.includes(protocol) || !target_cidr_or_host || String(target_cidr_or_host).trim() === '*') {
+      res.status(400).json({
+        error: 'Informe protocolo válido e alvo/CIDR específico (varredura genérica "*" é proibida por política).',
+      });
+      return;
+    }
+
+    const cleanTarget = String(target_cidr_or_host).trim();
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    try {
+      db.prepare(
+        `INSERT INTO authorized_collection_scopes (
+          id, tenant_id, protocol, target_cidr_or_host, port, description, rate_limit_rpm, is_active, approved_by, approved_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      ).run(
+        id,
+        tenantId,
+        protocol,
+        cleanTarget,
+        port ? Number(port) : null,
+        description ? String(description).trim() : null,
+        Math.min(600, Math.max(1, Number(rate_limit_rpm || 60))),
+        actor.id,
+        now,
+      );
+    } catch {
+      res.status(409).json({ error: 'Este escopo já está cadastrado neste tenant.' });
+      return;
+    }
+
+    writeAuditLog(db, {
+      tenant_id: tenantId,
+      actor_user_id: actor.id,
+      actor_email: actor.email,
+      actor_role: actor.role,
+      action: 'COLLECTION_SCOPE_APPROVED',
+      resource_type: 'authorized_collection_scope',
+      resource_id: id,
+      details: { protocol, target_cidr_or_host: cleanTarget, port: port ?? null },
+      ip_address: getClientIp(req),
+    });
+
+    const created = db.prepare('SELECT * FROM authorized_collection_scopes WHERE id = ?').get(id) as Record<string, unknown>;
+    res.status(201).json({ scope: { ...created, is_active: Boolean(created.is_active) } });
+  });
+
+  app.patch('/api/collection/scopes/:id/toggle', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isAdminRole(actor.role)) {
+      res.status(403).json({ error: 'Apenas administradores podem alterar escopos.' });
+      return;
+    }
+    const existing = db
+      .prepare('SELECT id, is_active FROM authorized_collection_scopes WHERE id = ? AND tenant_id = ?')
+      .get(req.params.id, req.resolvedTenantId!) as { id: string; is_active: number } | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Escopo não encontrado.' });
+      return;
+    }
+    const next = existing.is_active ? 0 : 1;
+    db.prepare('UPDATE authorized_collection_scopes SET is_active = ? WHERE id = ? AND tenant_id = ?').run(
+      next,
+      existing.id,
+      req.resolvedTenantId!,
+    );
+    res.json({ id: existing.id, is_active: Boolean(next) });
+  });
+
+  app.delete('/api/collection/scopes/:id', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isAdminRole(actor.role)) {
+      res.status(403).json({ error: 'Apenas administradores podem remover escopos.' });
+      return;
+    }
+    const info = db
+      .prepare('DELETE FROM authorized_collection_scopes WHERE id = ? AND tenant_id = ?')
+      .run(req.params.id, req.resolvedTenantId!);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Escopo não encontrado.' });
+      return;
+    }
+    res.json({ deleted: true });
+  });
+
+  app.post('/api/collection/native/ingest', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const { protocol, target, connector_id, metrics, logs, events } = req.body ?? {};
+    const validProtocols: CollectionProtocol[] = ['snmp_v3', 'mqtt', 'icmp', 'otlp', 'http_agent'];
+
+    if (!validProtocols.includes(protocol) || !target) {
+      res.status(400).json({ error: 'Informe protocol válido e target (IP/hostname/tópico) da origem.' });
+      return;
+    }
+
+    const authCheck = isTargetAuthorizedInScope(db, tenantId, protocol, String(target));
+    if (!authCheck.authorized) {
+      writeAuditLog(db, {
+        tenant_id: tenantId,
+        actor_user_id: actor.id,
+        actor_email: actor.email,
+        actor_role: actor.role,
+        action: 'UNAUTHORIZED_COLLECTION_TARGET',
+        resource_type: 'collection_target',
+        resource_id: String(target),
+        details: { protocol, target },
+        ip_address: getClientIp(req),
+      });
+      res.status(403).json({
+        error: `Coleta bloqueada: alvo "${target}" (${protocol}) não consta nos escopos autorizados deste tenant.`,
+      });
+      return;
+    }
+
+    const validConnector =
+      connector_id && db.prepare('SELECT id FROM connectors WHERE id = ? AND tenant_id = ?').get(connector_id, tenantId)
+        ? String(connector_id)
+        : null;
+
+    const metricsRes = Array.isArray(metrics) && metrics.length > 0
+      ? ingestMetricSamples(db, tenantId, validConnector, metrics as IngestMetricInput[])
+      : { ingested: 0, deduplicated: 0, anomalies_detected: 0 };
+    const logsRes = Array.isArray(logs) && logs.length > 0
+      ? ingestOperationalLogs(db, tenantId, validConnector, logs as IngestLogInput[])
+      : { ingested: 0, deduplicated: 0 };
+    const eventsRes = Array.isArray(events) && events.length > 0
+      ? ingestCanonicalEvents(db, tenantId, validConnector, events as IngestEventInput[])
+      : { ingested: 0, deduplicated: 0, created_incidents: 0 };
+
+    writeAuditLog(db, {
+      tenant_id: tenantId,
+      actor_user_id: actor.id,
+      actor_email: actor.email,
+      actor_role: actor.role,
+      action: 'NATIVE_COLLECTION_INGESTED',
+      resource_type: 'authorized_collection_scope',
+      resource_id: authCheck.matchedScope!.id,
+      details: { protocol, target, metrics: metricsRes, logs: logsRes, events: eventsRes },
+      ip_address: getClientIp(req),
+    });
+
+    res.status(201).json({
+      scope_id: authCheck.matchedScope!.id,
+      metrics: metricsRes,
+      logs: logsRes,
+      events: eventsRes,
+    });
+  });
+
+  app.post('/api/collection/otlp/v1/metrics', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const sourceTarget = String(req.body?.source_target || req.headers['x-otlp-source'] || '');
+    if (!sourceTarget) {
+      res.status(400).json({ error: 'Informe source_target (host/serviço emissor) para validação de escopo OTLP.' });
+      return;
+    }
+    const authCheck = isTargetAuthorizedInScope(db, tenantId, 'otlp', sourceTarget);
+    if (!authCheck.authorized) {
+      res.status(403).json({ error: `Origem OTLP "${sourceTarget}" fora de escopo autorizado.` });
+      return;
+    }
+    const samples = (req.body?.metrics ?? []) as IngestMetricInput[];
+    if (!Array.isArray(samples) || samples.length === 0) {
+      res.status(400).json({ error: 'Array "metrics" obrigatório no payload OTLP normalizado.' });
+      return;
+    }
+    const result = ingestMetricSamples(db, tenantId, null, samples);
+    res.status(201).json({ protocol: 'otlp', scope_id: authCheck.matchedScope!.id, ...result });
+  });
+
+  app.post('/api/collection/otlp/v1/logs', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const tenantId = req.resolvedTenantId!;
+    const sourceTarget = String(req.body?.source_target || req.headers['x-otlp-source'] || '');
+    if (!sourceTarget) {
+      res.status(400).json({ error: 'Informe source_target (host/serviço emissor) para validação de escopo OTLP.' });
+      return;
+    }
+    const authCheck = isTargetAuthorizedInScope(db, tenantId, 'otlp', sourceTarget);
+    if (!authCheck.authorized) {
+      res.status(403).json({ error: `Origem OTLP "${sourceTarget}" fora de escopo autorizado.` });
+      return;
+    }
+    const logs = (req.body?.logs ?? []) as IngestLogInput[];
+    if (!Array.isArray(logs) || logs.length === 0) {
+      res.status(400).json({ error: 'Array "logs" obrigatório no payload OTLP normalizado.' });
+      return;
+    }
+    const result = ingestOperationalLogs(db, tenantId, null, logs);
+    res.status(201).json({ protocol: 'otlp', scope_id: authCheck.matchedScope!.id, ...result });
+  });
+
+  // ==================== METRICS, LOGS, ANOMALIES, EVENTS & INCIDENTS / RCA ====================
+
+  app.get('/api/metrics', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const metricName = typeof req.query.metric_name === 'string' && req.query.metric_name ? req.query.metric_name.trim() : null;
+    const limit = Math.min(250, Math.max(1, Number(req.query.limit || 100)));
+
+    const rows = (
+      metricName
+        ? db
+            .prepare(
+              `SELECT m.*, a.name AS asset_name, sv.name AS service_name, s.code AS site_code
+               FROM metric_samples m
+               LEFT JOIN assets a ON a.id = m.asset_id AND a.tenant_id = m.tenant_id
+               LEFT JOIN services sv ON sv.id = m.service_id AND sv.tenant_id = m.tenant_id
+               LEFT JOIN sites s ON s.id = m.site_id AND s.tenant_id = m.tenant_id
+               WHERE m.tenant_id = ? AND m.metric_name = ?
+               ORDER BY m.observed_at_utc DESC LIMIT ?`,
+            )
+            .all(tenantId, metricName, limit)
+        : db
+            .prepare(
+              `SELECT m.*, a.name AS asset_name, sv.name AS service_name, s.code AS site_code
+               FROM metric_samples m
+               LEFT JOIN assets a ON a.id = m.asset_id AND a.tenant_id = m.tenant_id
+               LEFT JOIN services sv ON sv.id = m.service_id AND sv.tenant_id = m.tenant_id
+               LEFT JOIN sites s ON s.id = m.site_id AND s.tenant_id = m.tenant_id
+               WHERE m.tenant_id = ?
+               ORDER BY m.observed_at_utc DESC LIMIT ?`,
+            )
+            .all(tenantId, limit)
+    ) as Array<Record<string, unknown>>;
+
+    res.json({
+      metrics: rows.map((r) => ({ ...r, tags_json: JSON.parse(String(r.tags_json || '{}')) })),
+    });
+  });
+
+  app.get('/api/logs', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const severity = typeof req.query.severity === 'string' && req.query.severity !== 'ALL' ? req.query.severity.trim() : null;
+    const limit = Math.min(250, Math.max(1, Number(req.query.limit || 100)));
+
+    const rows = (
+      severity
+        ? db
+            .prepare(
+              `SELECT l.*, a.name AS asset_name, sv.name AS service_name
+               FROM operational_logs l
+               LEFT JOIN assets a ON a.id = l.asset_id AND a.tenant_id = l.tenant_id
+               LEFT JOIN services sv ON sv.id = l.service_id AND sv.tenant_id = l.tenant_id
+               WHERE l.tenant_id = ? AND l.severity = ?
+               ORDER BY l.observed_at_utc DESC LIMIT ?`,
+            )
+            .all(tenantId, severity, limit)
+        : db
+            .prepare(
+              `SELECT l.*, a.name AS asset_name, sv.name AS service_name
+               FROM operational_logs l
+               LEFT JOIN assets a ON a.id = l.asset_id AND a.tenant_id = l.tenant_id
+               LEFT JOIN services sv ON sv.id = l.service_id AND sv.tenant_id = l.tenant_id
+               WHERE l.tenant_id = ?
+               ORDER BY l.observed_at_utc DESC LIMIT ?`,
+            )
+            .all(tenantId, limit)
+    ) as Array<Record<string, unknown>>;
+
+    res.json({
+      logs: rows.map((r) => ({ ...r, attributes_json: JSON.parse(String(r.attributes_json || '{}')) })),
+    });
+  });
+
+  app.get('/api/anomalies', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const tenantId = req.resolvedTenantId!;
+    const rows = db
+      .prepare(
+        `SELECT an.*, a.name AS asset_name
+         FROM anomaly_detections an
+         LEFT JOIN assets a ON a.id = an.asset_id AND a.tenant_id = an.tenant_id
+         WHERE an.tenant_id = ?
+         ORDER BY an.detected_at_utc DESC LIMIT 100`,
+      )
+      .all(tenantId);
+    res.json({ anomalies: rows });
+  });
+
+  app.patch('/api/anomalies/:id', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
+    const actor = req.authUser!;
+    if (!isWriteAllowed(actor.role)) {
+      res.status(403).json({ error: 'Permissão insuficiente.' });
+      return;
+    }
+    const { status } = req.body ?? {};
+    if (!['ACKNOWLEDGED', 'DISMISSED'].includes(String(status))) {
+      res.status(400).json({ error: 'Status inválido. Use ACKNOWLEDGED ou DISMISSED.' });
+      return;
+    }
+    const info = db
+      .prepare('UPDATE anomaly_detections SET status = ? WHERE id = ? AND tenant_id = ?')
+      .run(String(status), req.params.id, req.resolvedTenantId!);
+    if (info.changes === 0) {
+      res.status(404).json({ error: 'Anomalia não encontrada.' });
+      return;
+    }
+    writeAuditLog(db, {
+      tenant_id: req.resolvedTenantId!,
+      actor_user_id: actor.id,
+      actor_email: actor.email,
+      actor_role: actor.role,
+      action: 'ANOMALY_STATUS_UPDATED',
+      resource_type: 'anomaly_detection',
+      resource_id: req.params.id,
+      details: { status },
+      ip_address: getClientIp(req),
+    });
+    res.json({ updated: true, status });
+  });
+
   // ==================== EVENTS & INCIDENTS / RCA ====================
 
   app.get('/api/events', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
@@ -1626,7 +2307,15 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     }
     const tenantId = req.resolvedTenantId!;
     const { rca_category, status, review_note } = req.body ?? {};
-    const validCategories: RcaCategory[] = ['eletrica', 'climatica_direta', 'composta', 'telecom_outros', 'desconhecida'];
+    const validCategories: RcaCategory[] = [
+      'eletrica',
+      'climatica_direta',
+      'composta',
+      'telecom_outros',
+      'ti_aplicacao',
+      'iot_sensor',
+      'desconhecida',
+    ];
     if (rca_category && !validCategories.includes(rca_category)) {
       res.status(400).json({ error: 'Categoria de RCA inválida.' });
       return;
@@ -1678,13 +2367,34 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
 
   app.get('/api/noc/overview', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
     const tenantId = req.resolvedTenantId!;
+    const domainFilter = typeof req.query.domain === 'string' && req.query.domain.trim() ? req.query.domain.trim().toLowerCase() : 'all';
+    const hasDomainFilter = domainFilter !== 'all';
+
     const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tenantId) as Record<string, unknown> | undefined;
 
     const sitesTotal = (db.prepare('SELECT COUNT(*) AS c FROM sites WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
     const sitesVerified = (
       db.prepare('SELECT COUNT(*) AS c FROM sites WHERE tenant_id = ? AND coord_verified = 1').get(tenantId) as { c: number }
     ).c;
-    const assetsTotal = (db.prepare('SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+
+    const assetsTotal = (
+      hasDomainFilter
+        ? db.prepare('SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND domain = ?').get(tenantId, domainFilter)
+        : db.prepare('SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ?').get(tenantId)
+    ) as { c: number };
+
+    const assetsUngeoreferenced = (
+      hasDomainFilter
+        ? db.prepare('SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND domain = ? AND site_id IS NULL').get(tenantId, domainFilter)
+        : db.prepare('SELECT COUNT(*) AS c FROM assets WHERE tenant_id = ? AND site_id IS NULL').get(tenantId)
+    ) as { c: number };
+
+    const servicesTotal = (
+      hasDomainFilter
+        ? db.prepare('SELECT COUNT(*) AS c FROM services WHERE tenant_id = ? AND domain = ?').get(tenantId, domainFilter)
+        : db.prepare('SELECT COUNT(*) AS c FROM services WHERE tenant_id = ?').get(tenantId)
+    ) as { c: number };
+
     const edgesTotal = (db.prepare('SELECT COUNT(*) AS c FROM topology_edges WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
     const connectorsTotal = (db.prepare('SELECT COUNT(*) AS c FROM connectors WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
     const connectorsHealthy = (
@@ -1701,21 +2411,123 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         .get(tenantId, cutoff24h) as { c: number }
     ).c;
     const eventsTotal = (db.prepare('SELECT COUNT(*) AS c FROM canonical_events WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const metrics24h = (
+      db
+        .prepare('SELECT COUNT(*) AS c FROM metric_samples WHERE tenant_id = ? AND observed_at_utc >= ?')
+        .get(tenantId, cutoff24h) as { c: number }
+    ).c;
+    const metricsTotal = (db.prepare('SELECT COUNT(*) AS c FROM metric_samples WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const logs24h = (
+      db
+        .prepare('SELECT COUNT(*) AS c FROM operational_logs WHERE tenant_id = ? AND observed_at_utc >= ?')
+        .get(tenantId, cutoff24h) as { c: number }
+    ).c;
+    const logsTotal = (db.prepare('SELECT COUNT(*) AS c FROM operational_logs WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const anomaliesOpen = (
+      db.prepare("SELECT COUNT(*) AS c FROM anomaly_detections WHERE tenant_id = ? AND status = 'OPEN'").get(tenantId) as { c: number }
+    ).c;
     const incidentsOpen = (
       db.prepare("SELECT COUNT(*) AS c FROM incidents WHERE tenant_id = ? AND status != 'RESOLVED'").get(tenantId) as { c: number }
     ).c;
     const incidentsTotal = (db.prepare('SELECT COUNT(*) AS c FROM incidents WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
 
+    // Breakdown por domínio (assets + services)
+    const assetDomains = db
+      .prepare('SELECT domain, COUNT(*) AS cnt FROM assets WHERE tenant_id = ? GROUP BY domain')
+      .all(tenantId) as Array<{ domain: string; cnt: number }>;
+    const serviceDomains = db
+      .prepare('SELECT domain, COUNT(*) AS cnt FROM services WHERE tenant_id = ? GROUP BY domain')
+      .all(tenantId) as Array<{ domain: string; cnt: number }>;
+
+    const domainMap = new Map<string, { domain: string; assets_count: number; services_count: number }>();
+    for (const d of ['ti', 'rede', 'iot', 'energia', 'ambiente', 'infra']) {
+      domainMap.set(d, { domain: d, assets_count: 0, services_count: 0 });
+    }
+    for (const row of assetDomains) {
+      const entry = domainMap.get(row.domain) ?? { domain: row.domain, assets_count: 0, services_count: 0 };
+      entry.assets_count = row.cnt;
+      domainMap.set(row.domain, entry);
+    }
+    for (const row of serviceDomains) {
+      const entry = domainMap.get(row.domain) ?? { domain: row.domain, assets_count: 0, services_count: 0 };
+      entry.services_count = row.cnt;
+      domainMap.set(row.domain, entry);
+    }
+
+    const totalTelemetryRecords = eventsTotal + metricsTotal + logsTotal;
+    const recentTelemetryRecords = events24h + metrics24h + logs24h;
+
     const telemetryStatus =
-      connectorsTotal === 0
+      connectorsTotal === 0 && totalTelemetryRecords === 0
         ? 'NOT_CONFIGURED'
-        : eventsTotal === 0
+        : totalTelemetryRecords === 0
           ? 'NO_DATA'
-          : events24h === 0
+          : recentTelemetryRecords === 0
             ? 'SOURCE_STALE'
             : 'ACTIVE';
 
     const incidentsStatus = incidentsTotal === 0 ? 'NO_DATA' : 'ACTIVE';
+
+    // Tendência real de incidentes abertos vs. resolvidos nas últimas 24h (baldes horários UTC)
+    const nowDate = new Date();
+    const currentHourStartMs = Date.UTC(
+      nowDate.getUTCFullYear(),
+      nowDate.getUTCMonth(),
+      nowDate.getUTCDate(),
+      nowDate.getUTCHours(),
+      0,
+      0,
+      0,
+    );
+    const trendStartMs = currentHourStartMs - 23 * 60 * 60 * 1000;
+    const trendStartIso = new Date(trendStartMs).toISOString();
+    const incidentsTrend24h: Array<{ hour_utc: string; label: string; opened: number; resolved: number }> = [];
+    const trendBucketByHourKey = new Map<string, { hour_utc: string; label: string; opened: number; resolved: number }>();
+
+    for (let i = 0; i < 24; i += 1) {
+      const bucketDate = new Date(trendStartMs + i * 60 * 60 * 1000);
+      const iso = bucketDate.toISOString();
+      const hourKey = iso.slice(0, 13);
+      const point = {
+        hour_utc: iso,
+        label: `${String(bucketDate.getUTCHours()).padStart(2, '0')}:00`,
+        opened: 0,
+        resolved: 0,
+      };
+      incidentsTrend24h.push(point);
+      trendBucketByHourKey.set(hourKey, point);
+    }
+
+    const recentIncidents = db
+      .prepare(
+        `SELECT opened_at_utc, resolved_at_utc
+         FROM incidents
+         WHERE tenant_id = ?
+           AND (opened_at_utc >= ? OR (resolved_at_utc IS NOT NULL AND resolved_at_utc >= ?))`,
+      )
+      .all(tenantId, trendStartIso, trendStartIso) as Array<{
+      opened_at_utc: string;
+      resolved_at_utc: string | null;
+    }>;
+
+    for (const row of recentIncidents) {
+      const openedDate = new Date(row.opened_at_utc);
+      if (!Number.isNaN(openedDate.getTime())) {
+        const openedBucket = trendBucketByHourKey.get(openedDate.toISOString().slice(0, 13));
+        if (openedBucket) {
+          openedBucket.opened += 1;
+        }
+      }
+      if (row.resolved_at_utc) {
+        const resolvedDate = new Date(row.resolved_at_utc);
+        if (!Number.isNaN(resolvedDate.getTime())) {
+          const resolvedBucket = trendBucketByHourKey.get(resolvedDate.toISOString().slice(0, 13));
+          if (resolvedBucket) {
+            resolvedBucket.resolved += 1;
+          }
+        }
+      }
+    }
 
     res.json({
       tenant: tenant ?? null,
@@ -1723,24 +2535,32 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         sites_total: sitesTotal,
         sites_verified_coords: sitesVerified,
         sites_pending_coords: sitesTotal - sitesVerified,
-        assets_total: assetsTotal,
+        assets_total: assetsTotal.c,
+        assets_ungeoreferenced: assetsUngeoreferenced.c,
+        services_total: servicesTotal.c,
         topology_edges_total: edgesTotal,
         connectors_total: connectorsTotal,
         connectors_healthy: connectorsHealthy,
         connectors_error: connectorsError,
         events_24h: events24h,
+        metrics_24h: metrics24h,
+        logs_24h: logs24h,
+        anomalies_open: anomaliesOpen,
         incidents_open: incidentsOpen,
       },
+      incidents_trend_24h: incidentsTrend24h,
+      domain_breakdown: [...domainMap.values()].filter((d) => d.assets_count > 0 || d.services_count > 0 || ['ti', 'rede', 'iot', 'energia', 'ambiente'].includes(d.domain)),
       honest_states: {
         telemetry_status: telemetryStatus,
         incidents_status: incidentsStatus,
         ml_status: 'MODEL_NOT_VALIDATED',
         prediction_status: 'PREDICTION_UNAVAILABLE',
-        backtest_status: eventsTotal < 100 ? 'INSUFFICIENT_DATA' : 'MODEL_NOT_VALIDATED',
+        backtest_status: totalTelemetryRecords < 100 ? 'INSUFFICIENT_DATA' : 'MODEL_NOT_VALIDATED',
       },
       provenance: {
         tenant_id: tenantId,
         window: '24h_utc_rolling',
+        domain_filter: domainFilter,
         computed_at_utc: new Date().toISOString(),
         source: 'sqlite_authoritative_store',
       },
@@ -1750,16 +2570,18 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
   app.get('/api/ml/status', authenticate, requireTenantContext, (req: AuthenticatedRequest, res) => {
     const tenantId = req.resolvedTenantId!;
     const eventCount = (db.prepare('SELECT COUNT(*) AS c FROM canonical_events WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const metricCount = (db.prepare('SELECT COUNT(*) AS c FROM metric_samples WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
     const incidentCount = (db.prepare('SELECT COUNT(*) AS c FROM incidents WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
 
     res.json({
       tenant_id: tenantId,
       model_status: 'MODEL_NOT_VALIDATED',
       prediction_status: 'PREDICTION_UNAVAILABLE',
-      backtest_status: eventCount < 100 ? 'INSUFFICIENT_DATA' : 'MODEL_NOT_VALIDATED',
+      backtest_status: eventCount + metricCount < 100 ? 'INSUFFICIENT_DATA' : 'MODEL_NOT_VALIDATED',
       shadow_mode_enforced: true,
       dataset_summary: {
         canonical_events_count: eventCount,
+        metric_samples_count: metricCount,
         incidents_count: incidentCount,
         minimum_events_recommended_for_split: 100,
       },
@@ -1770,7 +2592,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         { code: 'D_LIGHTGBM', name: 'LightGBM Local (Horizontes 1h/3h/6h)', status: 'MODEL_NOT_VALIDATED' },
         { code: 'E_XGBOOST', name: 'XGBoost Local (Horizontes 1h/3h/6h)', status: 'MODEL_NOT_VALIDATED' },
       ],
-      ablations: ['Rede', 'Rede + Energia', 'Rede + Energia + Clima'],
+      ablations: ['Rede / TI', 'Rede / TI + Energia', 'Rede / TI + Energia + Clima / IoT'],
       execution_note:
         'Treinamento local (LightGBM/XGBoost/SHAP) e backtesting cronológico anti-leakage residem nos serviços Python (services/ml-engine e backtesting/) para execução com séries históricas reais.',
     });
@@ -1925,9 +2747,13 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       status: string;
     };
     const sites = db.prepare('SELECT code, name, municipality, uf, latitude, longitude, coord_precision, coord_verified, criticality FROM sites WHERE tenant_id = ? ORDER BY code ASC').all(tenantId) as Array<Record<string, unknown>>;
-    const assets = db.prepare('SELECT name, hostname, ip_address, operational_state, criticality FROM assets WHERE tenant_id = ?').all(tenantId) as Array<Record<string, unknown>>;
+    const assets = db.prepare('SELECT name, domain, georeference_mode, hostname, ip_address, operational_state, criticality FROM assets WHERE tenant_id = ?').all(tenantId) as Array<Record<string, unknown>>;
+    const services = db.prepare('SELECT code, name, domain, criticality, sla_target_pct, operational_state FROM services WHERE tenant_id = ?').all(tenantId) as Array<Record<string, unknown>>;
     const connectors = db.prepare('SELECT connector_type, name, status, last_sync_at_utc, last_error FROM connectors WHERE tenant_id = ?').all(tenantId) as Array<Record<string, unknown>>;
     const eventsCount = (db.prepare('SELECT COUNT(*) AS c FROM canonical_events WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const metricsCount = (db.prepare('SELECT COUNT(*) AS c FROM metric_samples WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const logsCount = (db.prepare('SELECT COUNT(*) AS c FROM operational_logs WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
+    const anomaliesCount = (db.prepare('SELECT COUNT(*) AS c FROM anomaly_detections WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
     const incidentsCount = (db.prepare('SELECT COUNT(*) AS c FROM incidents WHERE tenant_id = ?').get(tenantId) as { c: number }).c;
 
     writeAuditLog(db, {
@@ -1971,12 +2797,16 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         `- **Gerado em (UTC):** \`${now}\``,
         `- **Gerado por:** ${actor.email} (${actor.role})`,
         ``,
-        `## 1. Inventário Real`,
+        `## 1. Inventário Real (Multidomínio)`,
         `- Sites cadastrados: ${sites.length}`,
         `- Sites com coordenadas verificadas: ${sites.filter((s) => Boolean(s.coord_verified)).length}`,
         `- Ativos cadastrados: ${assets.length}`,
+        `- Serviços cadastrados: ${services.length}`,
         `- Conectores configurados: ${connectors.length}`,
         `- Eventos canônicos ingeridos: ${eventsCount}`,
+        `- Amostras de métricas (séries temporais): ${metricsCount}`,
+        `- Logs operacionais: ${logsCount}`,
+        `- Anomalias estatísticas detectadas: ${anomaliesCount}`,
         `- Incidentes registrados: ${incidentsCount}`,
         ``,
         `## 2. Governança de Modelos e Decisão`,
@@ -1993,8 +2823,14 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     res.json({
       exported_at_utc: new Date().toISOString(),
       tenant,
-      inventory: { sites, assets, connectors },
-      telemetry_counts: { canonical_events: eventsCount, incidents: incidentsCount },
+      inventory: { sites, assets, services, connectors },
+      telemetry_counts: {
+        canonical_events: eventsCount,
+        metric_samples: metricsCount,
+        operational_logs: logsCount,
+        anomalies: anomaliesCount,
+        incidents: incidentsCount,
+      },
       ml_governance: { status: 'MODEL_NOT_VALIDATED', decision: 'NO-GO' },
     });
   });

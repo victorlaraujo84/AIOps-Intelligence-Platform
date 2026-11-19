@@ -1,18 +1,17 @@
-# Relatório de Validação — AIOps Intelligence Platform
+# Relatório de Validação e Critérios GO / NO-GO
 
-**Decisão Atual de Promoção de Modelos:** `NO-GO`  
-**Status de Predição:** `PREDICTION_UNAVAILABLE` (`MODEL_NOT_VALIDATED`)
+## 1. Governança de Modelos Preditivos
+- **Status Atual:** `MODEL_NOT_VALIDATED` / `PREDICTION_UNAVAILABLE`
+- **Decisão Atual de Produção:** **NO-GO (Shadow Mode obrigatório)**
+- **Motivo Objetivo:** Nenhum tenant possui ainda série histórica real rotulada e backtest cronológico aprovado com revisão humana formal documentada.
 
-## 1. Resumo da Matriz de Requisitos (Etapa A)
+## 2. Critérios Obrigatórios para Promoção (GO)
+1. **Integridade Temporal Anti-Leakage:** Todas as features validadas com `ingested_at_utc <= t` e `forecast_issued_at_utc <= t` (`services/feature-engine/temporal_guard.py`).
+2. **Split Cronológico com Embargo:** Separação treino/validação/holdout sem mistura temporal (`backtesting/split.py`).
+3. **Superação de Baselines:** Modelo candidato (Regressão Logística / LightGBM / XGBoost) deve superar simultaneamente Base Rate (A) e Regras Determinísticas (B) em PR-AUC e Brier Score com intervalo de confiança via bootstrap agrupado (`backtesting/evaluator.py`).
+4. **Aprovação Humana Auditada:** Registro explícito de revisão pelo líder de NOC antes de desativar Shadow Mode.
 
-| ID | Requisito | Implementação | Evidência / Teste | Status |
-|---|---|---|---|---|
-| REQ-01 | Isolamento multi-tenant server-side | `src/server/app.ts` (`requireTenantContext`) | `tests/security/multi-tenant.test.ts` | `PASS` (após execução) |
-| REQ-02 | Autenticação real e RBAC | `src/server/security.ts`, `/api/auth/*` | `tests/integration/api.test.ts` | `PASS` (após execução) |
-| REQ-03 | Prevenção de ciclos em topologia | `src/server/topology.ts` (`wouldCreateTopologyCycle`) | `tests/unit/topology.test.ts` | `PASS` (após execução) |
-| REQ-04 | Proteção anti-SSRF em conectores | `src/server/security.ts` (`validateExternalUrl`) | `tests/unit/security.test.ts` | `PASS` (após execução) |
-| REQ-05 | Ingestão canônica idempotente e RCA | `src/server/integrations.ts` (`ingestCanonicalEvents`) | `tests/integration/api.test.ts` | `PASS` (após execução) |
-| REQ-06 | PostgreSQL + PostGIS RLS em produção | `infra/migrations/001_initial_schema.sql` | Aguarda `docker compose up` na Etapa C/D | `NOT_TESTED` |
-| REQ-07 | Treinamento e Backtesting LightGBM/XGBoost | `services/ml-engine/`, `backtesting/` | Aguarda série histórica real na Etapa C/D | `BLOCKED` |
-
-> **Nota:** Nenhuma métrica de PR-AUC, Brier Score ou Precision@K será preenchida antes da execução real sobre série histórica válida sem vazamento temporal.
+## 3. Runbook de Homologação e Operação (Fase 6)
+- **Backup SQLite Automático:** Antes de aplicar qualquer versão em `src/server/migrations.ts`, o sistema grava snapshot automático em `data/backups/aiops-pre-v<N>-<timestamp>.db`.
+- **Backup PostgreSQL (Produção):** Executar `pg_dump -Fc` antes de aplicar `infra/migrations/*.sql`.
+- **Monitoramento de Coletores:** Verificar `connector_sync_runs` e `ingestion_checkpoints` quanto a falhas ou estado `SOURCE_STALE`.
