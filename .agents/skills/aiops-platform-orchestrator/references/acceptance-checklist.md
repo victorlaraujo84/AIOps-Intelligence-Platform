@@ -1,0 +1,11 @@
+# Checklist de aceite por PR
+- [ ] Escopo e ADR aprovados
+- [ ] Testes reais executados, comandos e resultados documentados
+- [ ] Tenant isolado em API/DB/worker/cache/filas aplicáveis
+- [ ] Nenhuma credencial ou telemetria fictícia em produção
+- [ ] Migração e rollback documentados/testados quando necessários
+- [ ] Estado `NOT_CONFIGURED`/`NO_DATA`/`SOURCE_STALE` honesto
+- [ ] Health de conector baseado em prova real
+- [ ] Docs, observabilidade, alertas e limites atualizados
+- [ ] Segurança revisada e CI passando
+- [ ] Nenhum modelo preditivo promovido sem GO humano

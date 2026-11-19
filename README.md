@@ -32,9 +32,15 @@ Plataforma web Full Stack, multi-tenant, para gestão georreferenciada de sites 
 
 ## Execução Local (Web + SQLite)
 
+Use Node 22 (versão indicada em `.nvmrc`, mínimo 22.12) e npm 10 ou superior.
+O gerenciador deste repositório é npm; `package-lock.json` define a resolução das dependências.
+`.npmrc` desativa scripts automáticos de instalação. O better-sqlite3 13 distribui binários prontos;
+isso evita a compilação implícita indevida do npm. A verificação abaixo abre e consulta SQLite em memória.
+
 ```bash
 cp .env.example .env
-npm install
+npm ci --no-audit --no-fund
+npm run check:sqlite
 npm run dev
 ```
 
@@ -51,7 +57,16 @@ docker compose up --build
 ## Testes Automatizados
 
 ```bash
+npm run check:sqlite
 npm run lint
 npm run build
 npm test
+python -B -m unittest discover -s tests/unit -p "test_python_*.py" -v
 ```
+
+Os contratos Python usam a biblioteca padrão; não exigem instalar o runtime ML.
+O CI os executa em Python 3.11 e 3.12. O comando `lint` executa a verificação de tipos (`tsc --noEmit`).
+Fixtures são exclusivas dos testes; aprovação de testes locais não homologa conectores, PostgreSQL/RLS ou implantação Docker.
+
+Para servir o bundle local, execute `npm run build`, defina `NODE_ENV=production` no ambiente e use `npm start`.
+O histórico e os limites do primeiro incremento P0 estão em [PR_P0_01_REPRODUTIBILIDADE.md](docs/PR_P0_01_REPRODUTIBILIDADE.md).
