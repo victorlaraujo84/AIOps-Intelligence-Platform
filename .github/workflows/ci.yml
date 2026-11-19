@@ -6,25 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   web-and-api-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Fixtures públicas exclusivas dos testes; não são segredos de implantação.
+      AUTH_SESSION_SECRET: ci-fixture-session-key-not-for-production-2026
+      CREDENTIAL_ENCRYPTION_KEY: ci-fixture-encryption-key-not-for-production-2026
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: ".nvmrc"
           cache: "npm"
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check:sqlite
       - run: npm run lint
       - run: npm run build
       - run: npm test
 
   python-contracts:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - run: python -m py_compile services/api/app/main.py services/api/app/schemas.py services/correlation/rca.py services/feature-engine/temporal_guard.py services/ml-engine/models.py services/ai-agent/adapter.py backtesting/split.py
+          python-version: ${{ matrix.python-version }}
+      - run: python -m compileall -q services backtesting tests
+      - run: python -B -m unittest discover -s tests/unit -p "test_python_*.py" -v
