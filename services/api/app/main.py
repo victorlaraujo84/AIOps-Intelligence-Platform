@@ -1,0 +1,24 @@
+from fastapi import FastAPI
+
+from .schemas import HonestState
+
+app = FastAPI(
+    title="AIOps Intelligence Platform — Core API",
+    version="1.0.0",
+    description="Backend modular FastAPI multi-tenant com RLS, ingestão espaço-temporal, RCA e ML local.",
+)
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok", "service": "aiops-fastapi"}
+
+
+@app.get("/api/v1/ml/governance-status")
+async def ml_governance_status() -> dict[str, object]:
+    return {
+        "model_status": HonestState.MODEL_NOT_VALIDATED.value,
+        "prediction_status": HonestState.PREDICTION_UNAVAILABLE.value,
+        "shadow_mode": True,
+        "decision": "NO-GO",
+    }

@@ -1,0 +1,6 @@
+{
+  "name": "AIOps Intelligence Platform",
+  "description": "Plataforma multi-tenant de gestão georreferenciada de sites e ativos, topologia de rede, correlação espaço-temporal, RCA e AIOps para NOC e infraestrutura.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
