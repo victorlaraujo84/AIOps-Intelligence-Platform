@@ -1,0 +1,11 @@
+# Checklist Docker
+- [ ] Docker/Compose disponíveis e versões registradas
+- [ ] `.env` fora do Git e segredos obrigatórios sem fallback fraco
+- [ ] PostgreSQL/Redis sem portas publicadas externamente
+- [ ] Reverse proxy HTTPS e política de firewall
+- [ ] Web/API compartilham fonte de verdade após migração
+- [ ] RLS e RBAC testados com dois tenants
+- [ ] Health/readiness e política de restart
+- [ ] Volumes persistentes, backup e restore comprovados
+- [ ] Logs sem credenciais e alertas de ingestão stale
+- [ ] Smoke/E2E, falha/restart e rollback documentados

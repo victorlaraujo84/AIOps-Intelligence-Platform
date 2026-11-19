@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIOps Platform Orchestrator"
+  short_description: "Evolução híbrida TI/IoT, Docker e governança Codex/Harness"
+  default_prompt: "Use $aiops-platform-orchestrator para auditar o repositório e propor PR-00 Discovery, sem modificar código."
