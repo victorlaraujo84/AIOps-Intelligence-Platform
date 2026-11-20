@@ -120,12 +120,12 @@ export function decryptCredentials(ciphertext: string): string {
   return decrypted.toString('utf8');
 }
 
-function isPrivateIpv4(ip: string): boolean {
+function isBlockedIpv4(ip: string): boolean {
   const octets = ip.split('.').map(Number);
   if (octets.length !== 4 || octets.some((n) => Number.isNaN(n) || n < 0 || n > 255)) {
     return true;
   }
-  const [a, b] = octets;
+  const [a, b, c] = octets;
   if (a === 10) return true;
   if (a === 127) return true;
   if (a === 0) return true;
@@ -133,18 +133,26 @@ function isPrivateIpv4(ip: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a === 192 && b === 0 && (c === 0 || c === 2)) return true;
+  if (a === 192 && b === 88 && c === 99) return true; // Transição 6to4
+  if (a === 192 && ((b === 31 && c === 196) || (b === 52 && c === 193) || (b === 175 && c === 48))) return true; // AS112/AMT
+  if (a === 198 && (b === 18 || b === 19)) return true; // Benchmark
+  if (a === 198 && b === 51 && c === 100) return true;
+  if (a === 203 && b === 0 && c === 113) return true; // Documentação
+  if (a >= 224) return true; // Multicast, reservado e broadcast
   return false;
 }
 
-function isPrivateIpv6(ip: string): boolean {
-  const normalized = ip.toLowerCase();
-  if (normalized === '::1' || normalized === '::') return true;
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
-  if (normalized.startsWith('fe80:')) return true;
-  if (normalized.startsWith('::ffff:')) {
-    const v4 = normalized.slice('::ffff:'.length);
-    if (net.isIPv4(v4)) return isPrivateIpv4(v4);
-  }
+function isBlockedIpv6(ip: string): boolean {
+  // URL já normalizou o literal IPv6. Política conservadora: unicast global
+  // 2000::/3, sem faixas especiais. Bloqueia também IPv4 mapeado/traduzido,
+  // inclusive ::ffff:7f00:1 (forma hexadecimal produzida pelo parser WHATWG).
+  const [first, second] = ip.split(':').map((word) => Number.parseInt(word || '0', 16));
+  if (first < 0x2000 || first > 0x3fff) return true;
+  if (first === 0x2001 && second < 0x0200) return true; // IETF 2001::/23
+  if (first === 0x2001 && second === 0x0db8) return true; // Documentação
+  if (first === 0x2002) return true; // Transição 6to4 com IPv4 embutido
+  if (first === 0x3fff && second < 0x1000) return true; // Documentação /20
   return false;
 }
 
@@ -170,7 +178,7 @@ export function validateExternalUrl(rawUrl: string): SsrfValidationResult {
     return { ok: false, reason: 'Credenciais embutidas na URL não são permitidas.' };
   }
 
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
   if (
     host === 'localhost' ||
     host.endsWith('.localhost') ||
@@ -182,11 +190,11 @@ export function validateExternalUrl(rawUrl: string): SsrfValidationResult {
   }
 
   const ipVersion = net.isIP(host);
-  if (ipVersion === 4 && isPrivateIpv4(host)) {
+  if (ipVersion === 4 && isBlockedIpv4(host)) {
     return { ok: false, reason: `IP privado/reservado bloqueado pela política anti-SSRF (${host}).` };
   }
-  if (ipVersion === 6 && isPrivateIpv6(host)) {
-    return { ok: false, reason: `IPv6 privado/link-local bloqueado pela política anti-SSRF (${host}).` };
+  if (ipVersion === 6 && isBlockedIpv6(host)) {
+    return { ok: false, reason: `IPv6 fora da política de destino público bloqueado pela política anti-SSRF (${host}).` };
   }
 
   return { ok: true, parsedUrl: parsed };
