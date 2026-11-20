@@ -682,12 +682,13 @@ export function ingestOperationalLogs(
 
   const checkAsset = db.prepare('SELECT id, site_id FROM assets WHERE id = ? AND tenant_id = ?');
   const checkService = db.prepare('SELECT id FROM services WHERE id = ? AND tenant_id = ?');
+  const checkSite = db.prepare('SELECT id FROM sites WHERE id = ? AND tenant_id = ?');
 
   const trx = db.transaction(() => {
     for (const l of logs) {
       let validAssetId: string | null = null;
       let validServiceId: string | null = null;
-      let validSiteId: string | null = l.site_id ?? null;
+      let validSiteId = l.site_id && checkSite.get(l.site_id, tenantId) ? l.site_id : null;
 
       if (l.asset_id) {
         const a = checkAsset.get(l.asset_id, tenantId) as { id: string; site_id: string | null } | undefined;

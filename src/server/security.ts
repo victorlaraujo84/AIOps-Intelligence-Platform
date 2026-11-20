@@ -45,20 +45,48 @@ function loadOrCreateRuntimeSecrets(): RuntimeSecrets {
   return generated;
 }
 
+function isConfiguredSecret(value: string | undefined, minBytes: number): value is string {
+  return Boolean(value && Buffer.byteLength(value.trim()) >= minBytes && !value.trim().startsWith('CHANGE_ME'));
+}
+
+function getConfiguredEncryptionKey(): Buffer | undefined {
+  const configured = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  if (configured?.startsWith('hex:')) {
+    const hex = configured.slice(4);
+    return /^[a-f0-9]{64}$/i.test(hex) ? Buffer.from(hex, 'hex') : undefined;
+  }
+  const minBytes = process.env.NODE_ENV === 'production' ? 32 : 16;
+  if (isConfiguredSecret(configured, minBytes)) {
+    return crypto.createHash('sha256').update(configured).digest();
+  }
+}
+
+export function validateProductionSecrets(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  if (!isConfiguredSecret(process.env.AUTH_SESSION_SECRET, 32)) {
+    throw new Error('AUTH_SESSION_SECRET deve ter pelo menos 32 bytes em produção.');
+  }
+  if (!getConfiguredEncryptionKey()) {
+    throw new Error('CREDENTIAL_ENCRYPTION_KEY deve ter pelo menos 32 bytes ou usar hex:<64 dígitos> em produção.');
+  }
+}
+
+export function getBootstrapToken(): string | undefined {
+  const token = process.env.AIOPS_BOOTSTRAP_TOKEN;
+  if (isConfiguredSecret(token, 32)) return token;
+  if (token) throw new Error('AIOPS_BOOTSTRAP_TOKEN deve ter pelo menos 32 bytes.');
+}
+
 function getSessionSecret(): string {
   const configured = process.env.AUTH_SESSION_SECRET;
-  if (configured && configured.length >= 32 && !configured.startsWith('CHANGE_ME')) {
+  if (isConfiguredSecret(configured, 32)) {
     return configured;
   }
   return loadOrCreateRuntimeSecrets().sessionSecret;
 }
 
 function getEncryptionKey(): Buffer {
-  const configured = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  if (configured && configured.length >= 16 && !configured.startsWith('CHANGE_ME')) {
-    return crypto.createHash('sha256').update(configured).digest();
-  }
-  return Buffer.from(loadOrCreateRuntimeSecrets().credKeyHex, 'hex');
+  return getConfiguredEncryptionKey() ?? Buffer.from(loadOrCreateRuntimeSecrets().credKeyHex, 'hex');
 }
 
 export function hashPassword(password: string): string {

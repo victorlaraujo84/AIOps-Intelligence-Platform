@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -29,4 +30,22 @@ test('proteção anti-SSRF bloqueia endereços internos, metadata e esquemas ins
   assert.equal(validateExternalUrl('http://192.168.1.1/status').ok, false);
   assert.equal(validateExternalUrl('file:///etc/passwd').ok, false);
   assert.equal(validateExternalUrl('https://api.open-meteo.com/v1/forecast').ok, true);
+});
+
+test('chave AES explícita preserva credenciais cifradas pelo runtime legado', (t) => {
+  const previousKey = process.env.CREDENTIAL_ENCRYPTION_KEY;
+  t.after(() => {
+    if (previousKey === undefined) delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+    else process.env.CREDENTIAL_ENCRYPTION_KEY = previousKey;
+  });
+
+  const legacyKey = crypto.randomBytes(32);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', legacyKey, iv);
+  const expected = 'credencial de fixture';
+  const encrypted = Buffer.concat([cipher.update(expected, 'utf8'), cipher.final()]);
+  const stored = [iv, cipher.getAuthTag(), encrypted].map((part) => part.toString('base64url')).join('.');
+
+  process.env.CREDENTIAL_ENCRYPTION_KEY = `hex:${legacyKey.toString('hex')}`;
+  assert.equal(decryptCredentials(stored), expected);
 });

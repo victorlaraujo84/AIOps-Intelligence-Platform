@@ -55,6 +55,7 @@ const NAV_ITEMS: Array<{ id: NavTab; label: string; Icon: typeof LayoutDashboard
 export default function App() {
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [bootstrapRequired, setBootstrapRequired] = useState(false);
+  const [bootstrapTokenRequired, setBootstrapTokenRequired] = useState(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [activeTab, setActiveTab] = useState<NavTab>('overview');
@@ -65,8 +66,9 @@ export default function App() {
       setCheckingAuth(true);
     }
     try {
-      const status = await apiRequest<{ bootstrap_required: boolean }>('/api/auth/status');
+      const status = await apiRequest<{ bootstrap_required: boolean; bootstrap_token_required?: boolean }>('/api/auth/status');
       setBootstrapRequired(status.bootstrap_required);
+      setBootstrapTokenRequired(Boolean(status.bootstrap_token_required));
       if (status.bootstrap_required) {
         setUser(null);
         setTenants([]);
@@ -127,7 +129,13 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthScreen bootstrapRequired={bootstrapRequired} onAuthenticated={(u) => void handleAuthenticated(u)} />;
+    return (
+      <AuthScreen
+        bootstrapRequired={bootstrapRequired}
+        bootstrapTokenRequired={bootstrapTokenRequired}
+        onAuthenticated={(u) => void handleAuthenticated(u)}
+      />
+    );
   }
 
   const activeTenantId = user.active_tenant_id;
