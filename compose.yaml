@@ -5,55 +5,67 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-aiops_platform}
       POSTGRES_USER: ${POSTGRES_USER:-aiops}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_LOCAL_ONLY}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Execute npm run docker:init}
+    networks: [backend]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiops} -d ${POSTGRES_DB:-aiops_platform}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 512m
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    user: redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Execute npm run docker:init}
+    command: ["sh", "-ec", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    networks: [backend]
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 128m
 
   api:
+    image: aiops-platform-api:local
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.api
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aiops:CHANGE_ME_LOCAL_ONLY@postgres:5432/aiops_platform}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-    ports:
-      - "8000:8000"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aiops}:${POSTGRES_PASSWORD:?Execute npm run docker:init}@postgres:5432/${POSTGRES_DB:-aiops_platform}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Execute npm run docker:init}@redis:6379/0
+      AI_AGENT_MODE: offline
+    networks: [backend]
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 256m
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 15s
       timeout: 5s
       retries: 5
 
   web:
+    image: aiops-platform-web:local
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.web
@@ -62,8 +74,16 @@ services:
       PORT: 3000
       NODE_ENV: production
       SQLITE_DB_PATH: /app/data/aiops.db
-    ports:
-      - "3000:3000"
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:?Execute npm run docker:init}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?Execute npm run docker:init}
+      AI_AGENT_MODE: offline
+    networks: [frontend]
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 512m
     volumes:
       - webdata:/app/data
     healthcheck:
@@ -72,7 +92,42 @@ services:
       timeout: 5s
       retries: 5
 
+  gateway:
+    image: nginxinc/nginx-unprivileged:stable-alpine
+    entrypoint: [nginx, -g, "daemon off;"]
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:8080"
+      - "127.0.0.1:${API_PORT:-8000}:8081"
+    networks: [edge, frontend, backend]
+    volumes:
+      - ./infra/docker/nginx.local.conf:/etc/nginx/conf.d/default.conf:ro
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    mem_limit: 64m
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/api/health && wget -q -O /dev/null http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
   redisdata:
   webdata:
+
+networks:
+  edge:
+    driver: bridge
+  frontend:
+    internal: true
+  backend:
+    internal: true

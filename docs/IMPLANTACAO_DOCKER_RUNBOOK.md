@@ -1,5 +1,8 @@
 # Runbook — Docker Compose (desenvolvimento → homologação → produção)
 
+Para o ambiente local implementado, use [DOCKER_HOMOLOGACAO_LOCAL.md](DOCKER_HOMOLOGACAO_LOCAL.md).
+As seções abaixo incluem requisitos e planejamento de produção ainda pendentes; não representam homologação pública concluída.
+
 ## Premissas
 Implantação inicial em host Docker com Compose; separar Web, API, PostgreSQL/PostGIS, Redis e workers conforme necessidade. **Este documento é um plano, não um relato de deploy realizado.** Antes de produção, corrigir a divergência de persistência Web/SQLite vs Python/PostgreSQL.
 

@@ -10,6 +10,13 @@
   "scripts": {
     "dev": "tsx server.ts",
     "start": "tsx server.ts",
+    "start:docker": "node scripts/check-web-env.mjs && npm start",
+    "docker:init": "node scripts/init-local-env.mjs",
+    "docker:check-env": "node scripts/check-local-env.mjs",
+    "docker:build": "npm run docker:check-env && docker compose build",
+    "docker:up": "npm run docker:check-env && docker compose up -d --wait --wait-timeout 180",
+    "docker:down": "docker compose down",
+    "docker:test": "node scripts/test-compose-local.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

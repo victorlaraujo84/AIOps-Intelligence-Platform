@@ -42,3 +42,19 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m compileall -q services backtesting tests
       - run: python -B -m unittest discover -s tests/unit -p "test_python_*.py" -v
+
+  docker-local-homologation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: "npm"
+      - run: npm ci --no-audit --no-fund
+      - run: npm run docker:init
+      - run: npm run docker:check-env
+      - run: docker compose config --quiet
+      - run: docker compose build
+      - run: npm run docker:test
