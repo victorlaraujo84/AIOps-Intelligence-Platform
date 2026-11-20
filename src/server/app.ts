@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { isTargetAuthorizedInScope, type CollectionProtocol } from './collection.ts';
 import { initializeTenantTaxonomy, openDatabase, writeAuditLog } from './db.ts';
+import { validateOutboundHttpsUrl } from './outbound-http.ts';
 import {
   CONNECTOR_CATALOG,
   geocodeAddressNominatim,
@@ -1598,7 +1599,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     }
 
     if (endpoint_url) {
-      const ssrf = validateExternalUrl(String(endpoint_url));
+      const ssrf = validateOutboundHttpsUrl(String(endpoint_url));
       if (!ssrf.ok) {
         res.status(400).json({ error: ssrf.reason });
         return;
