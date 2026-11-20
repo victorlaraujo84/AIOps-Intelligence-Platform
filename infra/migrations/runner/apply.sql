@@ -18,7 +18,8 @@ REVOKE ALL ON TABLE aiops_admin.schema_migrations FROM PUBLIC;
 WITH known(version, filename, sha256) AS (
   VALUES
     (1, '001_initial_schema.sql', :'initial_sha'),
-    (2, '002_hybrid_observability.sql', :'hybrid_sha')
+    (2, '002_hybrid_observability.sql', :'hybrid_sha'),
+    (3, '003_tenant_reader.sql', :'reader_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -26,13 +27,21 @@ SELECT NOT EXISTS (
     WHERE stored.filename IS DISTINCT FROM known.filename OR stored.sha256 IS DISTINCT FROM known.sha256
   ) AS history_matches,
   COALESCE(bool_or(m.version = 1), false) AS has_initial,
-  COALESCE(bool_or(m.version = 2), false) AS has_hybrid
+  COALESCE(bool_or(m.version = 2), false) AS has_hybrid,
+  COALESCE(bool_or(m.version = 3), false) AS has_reader
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_reader
+  \if :has_hybrid
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 003 sem versão 002'; END $$;
+  \endif
 \endif
 
 \if :has_initial
@@ -72,6 +81,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../002_hybrid_observability.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (2, '002_hybrid_observability.sql', :'hybrid_sha');
+\endif
+
+\if :has_reader
+\else
+  \ir ../003_tenant_reader.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (3, '003_tenant_reader.sql', :'reader_sha');
 \endif
 
 COMMIT;

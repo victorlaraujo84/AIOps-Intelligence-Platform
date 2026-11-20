@@ -41,6 +41,22 @@ A adoção confere as tabelas, extensões e políticas esperadas. Se apenas a ve
 
 Falhas durante a execução revertem a transação. Para reverter uma migração já concluída, restaure o backup em um banco separado, valide os dados e planeje o retorno antes de mudar a conexão. O SQLite do console não participa desse procedimento.
 
+### Isolamento de leitura no PostgreSQL
+
+A migração 003 cria `aiops_tenant_reader`, um papel sem login próprio, com leitura por tenant de inventário, telemetria e incidentes. O papel lê apenas as colunas operacionais de conectores e auditoria. Credenciais, usuários, partições diretas, histórico de migrações e escrita ficam fora do papel.
+
+Na futura integração do backend, autentique a operação e resolva o tenant antes de abrir a transação de leitura. Use uma conta de serviço com permissão para assumir apenas o papel necessário e defina o UUID com parâmetro da aplicação:
+
+```sql
+BEGIN;
+SET LOCAL ROLE aiops_tenant_reader;
+SELECT set_config('app.current_tenant_id', $1::uuid::text, true);
+-- Consultas de leitura no mesmo cliente da transação.
+COMMIT;
+```
+
+A configuração é local à transação. O backend deve controlar o valor a partir da sessão autenticada, pois o PostgreSQL trata o parâmetro de sessão como contexto fornecido pelo cliente de banco. Reserve essa conta ao backend de confiança. A criação da conta de login, a integração de runtime e as permissões de escrita permanecem etapas separadas.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
