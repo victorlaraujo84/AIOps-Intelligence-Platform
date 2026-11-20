@@ -24,7 +24,22 @@ Para sair do modo local, configure `AIOPS_HOST` com o nome DNS do console e `AIO
 
 ## Perfil opcional de homologação
 
-`docker compose --profile core up -d --build --wait` também inicia PostgreSQL/PostGIS, Redis e FastAPI em uma rede interna. Configure `POSTGRES_PASSWORD` para uma base nova. O volume do PostgreSQL executa os SQLs de inicialização na primeira criação e o Web continua usando SQLite. O health do FastAPI verifica se seu processo responde. A validação de RLS e a migração da base Web são etapas separadas.
+`docker compose --profile core up -d --build --wait` também inicia PostgreSQL/PostGIS, Redis e FastAPI em uma rede interna. Configure `POSTGRES_PASSWORD` para uma base nova. O Web continua usando SQLite. O health do FastAPI verifica se seu processo responde. A validação de RLS e a migração da base Web são etapas separadas.
+
+### Migrações do PostgreSQL
+
+O serviço `postgres-migrate` aplica os SQLs versionados antes de a API iniciar. Ele registra cada arquivo e seu SHA-256 em `aiops_admin.schema_migrations`. A transação inclui o histórico e o schema, e o lock impede duas aplicações simultâneas no mesmo banco. Em volumes já gerenciados pelo serviço, use o mesmo projeto Compose, banco e credenciais. Para mudanças futuras, adicione um SQL numerado e registre sua ordem e checksum no executor antes de publicar. O executor recusa alterações de checksum em versões registradas.
+
+Os volumes criados pelo Compose anterior podem ter os SQLs 001 e 002 aplicados sem histórico. Faça backup, confira a origem do schema e rode a adoção uma vez depois de o PostgreSQL estar saudável:
+
+```bash
+AIOPS_POSTGRES_ADOPT_LEGACY=true docker compose --profile core run --rm --no-deps postgres-migrate
+docker compose --profile core up -d --wait
+```
+
+A adoção confere as tabelas, extensões e políticas esperadas. Se apenas a versão 001 estiver presente, a versão 002 será aplicada na mesma transação. Se encontrar uma versão parcial ou divergente, o executor interrompe a adoção para revisão. O histórico distingue versões adotadas das aplicadas. As verificações de adoção não substituem a revisão do schema e do backup antes da atualização.
+
+Falhas durante a execução revertem a transação. Para reverter uma migração já concluída, restaure o backup em um banco separado, valide os dados e planeje o retorno antes de mudar a conexão. O SQLite do console não participa desse procedimento.
 
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.

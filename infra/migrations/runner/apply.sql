@@ -1,0 +1,78 @@
+BEGIN;
+SET LOCAL search_path = public, pg_catalog;
+SET LOCAL lock_timeout = '10s';
+SELECT pg_advisory_xact_lock(189174310, 1);
+
+CREATE SCHEMA IF NOT EXISTS aiops_admin;
+REVOKE ALL ON SCHEMA aiops_admin FROM PUBLIC;
+
+CREATE TABLE IF NOT EXISTS aiops_admin.schema_migrations (
+  version INTEGER PRIMARY KEY,
+  filename TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  adopted BOOLEAN NOT NULL DEFAULT FALSE
+);
+REVOKE ALL ON TABLE aiops_admin.schema_migrations FROM PUBLIC;
+
+WITH known(version, filename, sha256) AS (
+  VALUES
+    (1, '001_initial_schema.sql', :'initial_sha'),
+    (2, '002_hybrid_observability.sql', :'hybrid_sha')
+)
+SELECT NOT EXISTS (
+    SELECT 1 FROM aiops_admin.schema_migrations AS stored
+    LEFT JOIN known ON known.version = stored.version
+    WHERE stored.filename IS DISTINCT FROM known.filename OR stored.sha256 IS DISTINCT FROM known.sha256
+  ) AS history_matches,
+  COALESCE(bool_or(m.version = 1), false) AS has_initial,
+  COALESCE(bool_or(m.version = 2), false) AS has_hybrid
+FROM aiops_admin.schema_migrations AS m
+\gset
+
+\if :history_matches
+\else
+  DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_initial
+\else
+  \if :has_hybrid
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 002 sem versão 001'; END $$;
+  \endif
+
+  SELECT EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname IN (
+      'tenants', 'users', 'concessions', 'locality_types', 'sites', 'asset_categories',
+      'assets', 'topology_edges', 'connectors', 'canonical_events', 'incidents', 'audit_logs',
+      'services', 'service_dependencies', 'metric_samples', 'metric_samples_default',
+      'operational_logs', 'ingestion_checkpoints', 'authorized_collection_scopes', 'anomaly_detections'
+    )
+  ) AS has_legacy_objects
+  \gset
+
+  \if :has_legacy_objects
+    \if :adopt_legacy
+      \ir adopt-legacy.sql
+    \else
+      DO $$ BEGIN RAISE EXCEPTION
+        'Schema legado sem histórico. Faça backup e siga o procedimento de adoção no guia de implantação';
+      END $$;
+    \endif
+  \else
+    \ir ../001_initial_schema.sql
+    INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+    VALUES (1, '001_initial_schema.sql', :'initial_sha');
+  \endif
+\endif
+
+\if :has_hybrid
+\else
+  \ir ../002_hybrid_observability.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (2, '002_hybrid_observability.sql', :'hybrid_sha');
+\endif
+
+COMMIT;
+SELECT version, filename, adopted FROM aiops_admin.schema_migrations ORDER BY version;

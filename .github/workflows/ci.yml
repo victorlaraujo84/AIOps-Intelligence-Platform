@@ -54,10 +54,14 @@ jobs:
           sh scripts/init-docker-env.sh
           docker compose --profile core config --quiet
           docker compose --profile core up --build -d --wait --wait-timeout 120
+          docker compose --profile core run -T --rm --no-deps postgres-migrate
           docker compose --profile core exec -T postgres sh -ec '
             psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
               -c "SELECT tenant_id FROM canonical_events LIMIT 0" \
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
+            history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
+              "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
+            test "$history" = 1,2
           '
           docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt "$RUNNER_TEMP/aiops-root.crt"
       - name: Validar HTTPS, bootstrap e sessão após reinício

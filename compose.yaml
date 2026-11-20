@@ -63,12 +63,34 @@ services:
       - backend
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./infra/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  postgres-migrate:
+    profiles: [core]
+    image: postgis/postgis:16-3.4-alpine
+    restart: "no"
+    user: postgres
+    read_only: true
+    entrypoint: ["sh", "/opt/aiops/migrate-postgres.sh"]
+    environment:
+      PGHOST: postgres
+      PGCONNECT_TIMEOUT: 10
+      PGDATABASE: ${POSTGRES_DB:-aiops_platform}
+      PGUSER: ${POSTGRES_USER:-aiops}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      AIOPS_POSTGRES_ADOPT_LEGACY: ${AIOPS_POSTGRES_ADOPT_LEGACY:-false}
+    networks:
+      - backend
+    volumes:
+      - ./infra/docker/migrate-postgres.sh:/opt/aiops/migrate-postgres.sh:ro
+      - ./infra/migrations:/opt/aiops/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   redis:
     profiles: [core]
@@ -95,8 +117,8 @@ services:
     networks:
       - backend
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
