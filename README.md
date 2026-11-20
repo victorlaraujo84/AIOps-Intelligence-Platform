@@ -38,8 +38,8 @@ O gerenciador deste repositório é npm; `package-lock.json` define a resoluçã
 isso evita a compilação implícita indevida do npm. A verificação abaixo abre e consulta SQLite em memória.
 
 ```bash
-cp .env.example .env
 npm ci --no-audit --no-fund
+npm run docker:init
 npm run check:sqlite
 npm run dev
 ```
@@ -49,10 +49,23 @@ Acesse `http://localhost:3000`. Como o banco inicia sem usuários fictícios, cr
 ## Execução com Docker Compose (PostgreSQL/PostGIS + Redis + FastAPI + Web)
 
 ```bash
-cp .env.example .env
-# Edite .env definindo AUTH_SESSION_SECRET, CREDENTIAL_ENCRYPTION_KEY e POSTGRES_PASSWORD
-docker compose up --build
+npm ci --no-audit --no-fund
+npm run docker:init       # uma vez, somente se .env não existir
+npm run docker:check-env
+npm run docker:build
+npm run docker:test       # projeto isolado, fixtures removidas ao terminar
+npm run docker:up
 ```
+
+Homologação local: web em `http://127.0.0.1:3000`, FastAPI em `http://127.0.0.1:8000`.
+Um gateway local encaminha essas portas para web/API. PostgreSQL e Redis não publicam portas;
+web/API/banco/Redis permanecem em redes internas sem saída externa.
+O `.env` é gerado com segredos aleatórios e preservado se já existir; nunca o envie ao Git.
+Para parar sem apagar dados, use `npm run docker:down`. Execute `docker:up` para retomá-los.
+
+O runtime web continua em SQLite; FastAPI, PostgreSQL e Redis ainda não compõem o backend funcional unificado.
+Modelos ML são dependências opcionais em `services/api/requirements-ml.txt`, fora da imagem API básica.
+Consulte [o runbook local](docs/DOCKER_HOMOLOGACAO_LOCAL.md) para persistência, backup, limites e evidências.
 
 ## Testes Automatizados
 
