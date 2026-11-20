@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -42,3 +41,45 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m compileall -q services backtesting tests
       - run: python -B -m unittest discover -s tests/unit -p "test_python_*.py" -v
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMPOSE_PROJECT_NAME: aiops-ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurar e subir em volumes descartáveis
+        run: |
+          sh scripts/init-docker-env.sh
+          docker compose --profile core config --quiet
+          docker compose --profile core up --build -d --wait --wait-timeout 120
+          docker compose --profile core exec -T postgres sh -ec '
+            psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 \
+              -c "SELECT tenant_id FROM canonical_events LIMIT 0" \
+              -c "SELECT tenant_id FROM metric_samples LIMIT 0"
+          '
+          docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt "$RUNNER_TEMP/aiops-root.crt"
+      - name: Validar HTTPS, bootstrap e sessão após reinício
+        run: |
+          ca="$RUNNER_TEMP/aiops-root.crt"
+          cookies="$RUNNER_TEMP/aiops-cookies.txt"
+          token="$(sed -n 's/^AIOPS_BOOTSTRAP_TOKEN=//p' .env)"
+          curl --fail --silent --show-error --cacert "$ca" https://localhost/api/health
+          curl --fail --silent --show-error --cacert "$ca" --output /dev/null https://localhost/
+          curl --fail --silent --show-error --cacert "$ca" \
+            --header "X-Bootstrap-Token: $token" --cookie-jar "$cookies" --output /dev/null \
+            --json '{"email":"docker-ci@example.invalid","full_name":"Docker CI","password":"docker-ci-fixture-only","initial_tenant_name":"Docker CI"}' \
+            https://localhost/api/auth/bootstrap
+          docker compose --profile core restart web
+          docker compose --profile core up -d --wait --wait-timeout 120
+          curl --fail --silent --show-error --retry 5 --cacert "$ca" --cookie "$cookies" \
+            https://localhost/api/auth/me | jq -e '.user.role == "super_admin" and .user.active_tenant_id != null'
+      - name: Estado do ambiente em caso de falha
+        if: failure()
+        run: |
+          docker compose --profile core ps
+          docker compose --profile core logs --tail=80
+      - name: Remover ambiente descartável
+        if: always()
+        run: docker compose --profile core down --volumes --remove-orphans

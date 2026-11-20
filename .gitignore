@@ -17,4 +17,4 @@ __pycache__/
 venv/
 mlruns/
 artifacts/
-
+/aiops-local-ca.crt
