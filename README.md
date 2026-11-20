@@ -46,13 +46,19 @@ npm run dev
 
 Acesse `http://localhost:3000`. Como o banco inicia sem usuários fictícios, crie o primeiro `super_admin` na tela de inicialização segura.
 
-## Execução com Docker Compose (PostgreSQL/PostGIS + Redis + FastAPI + Web)
+## Execução com Docker Compose
+
+Em uma instalação nova, use Docker Engine com Compose v2 e OpenSSL. Os comandos abaixo iniciam o console Web com SQLite persistente e um proxy HTTPS acessível pelo próprio host.
 
 ```bash
-cp .env.example .env
-# Edite .env definindo AUTH_SESSION_SECRET, CREDENTIAL_ENCRYPTION_KEY e POSTGRES_PASSWORD
-docker compose up --build
+sh scripts/init-docker-env.sh
+docker compose up -d --build --wait
+docker compose ps
+docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt ./aiops-local-ca.crt
+curl --cacert ./aiops-local-ca.crt https://localhost/api/health
 ```
+
+Confie na CA local para acessar `https://localhost` no navegador e conclua a criação do primeiro administrador com o valor de `AIOPS_BOOTSTRAP_TOKEN` do `.env`. Para atualização de uma base existente, acesso remoto, backup e perfil opcional PostgreSQL/Redis/FastAPI, consulte o [guia de implantação](docs/deployment.md).
 
 ## Testes Automatizados
 
@@ -68,5 +74,5 @@ Os contratos Python usam a biblioteca padrão; não exigem instalar o runtime ML
 O CI os executa em Python 3.11 e 3.12. O comando `lint` executa a verificação de tipos (`tsc --noEmit`).
 Fixtures são exclusivas dos testes; aprovação de testes locais não homologa conectores, PostgreSQL/RLS ou implantação Docker.
 
-Para servir o bundle local, execute `npm run build`, defina `NODE_ENV=production` no ambiente e use `npm start`.
+Para servir o bundle pelo modo de produção, execute `npm run build` e use o Compose com HTTPS e os segredos configurados.
 O histórico e os limites do primeiro incremento P0 estão em [PR_P0_01_REPRODUTIBILIDADE.md](docs/PR_P0_01_REPRODUTIBILIDADE.md).
