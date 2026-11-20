@@ -292,6 +292,38 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 3,
+    name: 'isolate_operational_log_sites',
+    up: (db) => {
+      db.exec(`
+        UPDATE operational_logs
+        SET site_id = NULL
+        WHERE site_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM sites
+          WHERE sites.id = operational_logs.site_id AND sites.tenant_id = operational_logs.tenant_id
+        );
+
+        CREATE TRIGGER operational_logs_site_tenant_insert
+        BEFORE INSERT ON operational_logs
+        WHEN NEW.site_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM sites WHERE id = NEW.site_id AND tenant_id = NEW.tenant_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Log site must belong to its tenant');
+        END;
+
+        CREATE TRIGGER operational_logs_site_tenant_update
+        BEFORE UPDATE OF site_id, tenant_id ON operational_logs
+        WHEN NEW.site_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM sites WHERE id = NEW.site_id AND tenant_id = NEW.tenant_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'Log site must belong to its tenant');
+        END;
+      `);
+    },
+  },
 ];
 
 export function runSqliteMigrations(db: Database.Database, dbPath: string): void {

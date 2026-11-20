@@ -62,6 +62,10 @@ services:
       PORT: 3000
       NODE_ENV: production
       SQLITE_DB_PATH: /app/data/aiops.db
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      AIOPS_BOOTSTRAP_TOKEN: ${AIOPS_BOOTSTRAP_TOKEN:-}
+      AIOPS_TRUST_PROXY: ${AIOPS_TRUST_PROXY:-}
     ports:
       - "3000:3000"
     volumes:
