@@ -40,6 +40,12 @@ Configure os valores por ambiente ou secret store. O Web valida a configuração
 - Fora do Compose, preencha `AIOPS_TRUST_PROXY` somente com os IPs ou CIDRs do proxy TLS confiável. Configure esse proxy para controlar os cabeçalhos encaminhados e restrinja o acesso direto ao Web.
 - Para uma base vazia, provisione `AIOPS_BOOTSTRAP_TOKEN` com um valor aleatório de pelo menos 32 bytes. Informe-o na tela de inicialização ou no cabeçalho `X-Bootstrap-Token` do pedido de bootstrap. Remova-o do ambiente após concluir a criação do primeiro administrador.
 
+## Destinos externos dos conectores
+
+O cliente de saída do Web exige a URL HTTPS final, valida o certificado e usa apenas os endereços públicos aprovados na resolução DNS da própria conexão. Respostas com redirecionamento são recusadas. Se um conector existente estiver configurado com HTTP ou com uma URL que redireciona, ajuste para o endpoint HTTPS final documentado antes de testá-lo. Conectores em redes privadas exigem um coletor ou caminho de saída autorizado separado.
+
+O teste de conectividade verifica a resposta do endpoint. A confirmação de ingestão recente requer uma execução de sincronização com dados válidos.
+
 ## Atualização do SQLite e rollback
 
 A migração v3 preserva os logs e limpa apenas os vínculos com sites ausentes ou de outro tenant. Ela também bloqueia novos vínculos inválidos no banco. Antes de atualizar, faça um backup verificado do SQLite e registre o ponto de restauração. Para reverter sem desfazer essa proteção, volte à versão anterior da aplicação preservando a base atual. Se precisar voltar ao estado anterior dos vínculos, restaure o backup com a aplicação parada e reconcilie os registros criados após o backup.
