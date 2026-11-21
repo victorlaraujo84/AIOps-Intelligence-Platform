@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import get_inventory_pool, inventory_read_transaction
-from .postgres_inventory_write import audit_inventory_write, inventory_write_transaction, lock_inventory_graph
+from .postgres_inventory_write import audit_inventory_write, inventory_write_identity, inventory_write_transaction, lock_inventory_graph
 from .postgres_service_write import ServiceWriteRoute, get_service_write_pool
 
 
@@ -87,7 +87,7 @@ async def create_dependency(
     service_id: UUID,
     body: CreateDependency,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_service_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_service_writer") as (connection, tenant):
@@ -116,7 +116,7 @@ async def create_dependency(
 async def delete_dependency(
     service_id: UUID,
     dependency_id: UUID,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_service_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_service_writer") as (connection, tenant):

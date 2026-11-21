@@ -267,6 +267,62 @@ if (process.argv.includes('--service-writes')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--dependency-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const admin = client();
+  const login = (session, email, password) => session('/login', { data: { email, password } });
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const read = async (session, path) => (await (await session(path)).json()).items;
+  assert.equal((await login(a, 'operator-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(b, 'operator-b-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(viewer, 'viewer-auth@example.invalid', 'viewer-ci-fixture-only')).status, 204);
+  const services = '/inventory/services';
+  const current = (await read(a, services)).find(row => row.code === 'PILOT_SERVICE');
+  const upstream = (await read(a, services)).find(row => row.code === 'RUNTIME_SERVICE');
+  const foreign = (await read(b, services)).find(row => row.code === 'PILOT_SERVICE');
+  const asset = (await read(a, '/inventory/assets')).find(row => row.name === 'Ativo A');
+  const foreignAsset = (await read(b, '/inventory/assets')).find(row => row.name === 'Ativo B');
+  const path = services + '/' + current.id + '/dependencies';
+  const add = (session, tenant, data) => session(path, { data, headers: scope(tenant) });
+  assert.equal((await b(path)).status, 404);
+  assert.equal((await viewer(path)).status, 200);
+  assert.equal((await add(viewer, tenantA, { asset_id: asset.id })).status, 403);
+  assert.equal((await a(path, { data: { asset_id: asset.id } })).status, 422);
+  assert.equal((await add(a, tenantA, { asset_id: foreignAsset.id })).status, 422);
+  assert.equal((await add(a, tenantA, { upstream_service_id: foreign.id })).status, 422);
+  assert.equal((await add(a, tenantA, { asset_id: asset.id, weight: 0 })).status, 422);
+  const linked = await add(a, tenantA, { asset_id: asset.id, dependency_role: 'redundant', weight: 2.5 });
+  assert.equal(linked.status, 201);
+  const link = await linked.json();
+  const upstreamLink = await add(a, tenantA, { upstream_service_id: upstream.id });
+  assert.equal(upstreamLink.status, 201);
+  assert.equal((await a(services + '/' + upstream.id + '/dependencies', {
+    data: { upstream_service_id: current.id }, headers: scope(tenantA),
+  })).status, 409);
+  const dependencies = await read(viewer, path);
+  assert.ok(dependencies.some(row => row.id === link.id && row.asset_name === 'Ativo A' && row.weight === 2.5));
+  assert.ok(dependencies.some(row => row.upstream_service_id === upstream.id));
+
+  const remove = (session, tenant, extra = {}) => session(path + '/' + link.id, {
+    method: 'DELETE', data: {}, headers: { ...scope(tenant), ...extra },
+  });
+  assert.equal((await remove(viewer, tenantA)).status, 403);
+  assert.equal((await remove(b, tenantB)).status, 404);
+  assert.equal((await remove(a, tenantA, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await login(admin, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
+  assert.equal((await admin('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(admin, tenantA)).status, 409);
+  assert.equal((await remove(a, tenantA)).status, 204);
+  assert.ok(!(await read(a, path)).some(row => row.id === link.id));
+  for (const session of [a, b, viewer, admin]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Dependências listadas, criadas e removidas por HTTPS com isolamento e bloqueio de ciclos.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);

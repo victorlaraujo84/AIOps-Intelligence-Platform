@@ -204,6 +204,8 @@ jobs:
             node tests/integration/postgres-console-smoke.mjs --asset-writes
           NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
             node tests/integration/postgres-console-smoke.mjs --service-writes
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --dependency-writes
           counts=$(docker compose --profile core exec -T postgres sh -ec '
             exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
           ' <<'SQL'
@@ -241,6 +243,15 @@ jobs:
           SQL
           )
           test "$service_counts" = $'SERVICE_CREATED|2\nSERVICE_UPDATED|1'
+          dependency_counts=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT action, count(*) FROM audit_logs
+          WHERE resource_type = 'service_dependency'
+          GROUP BY action ORDER BY action;
+          SQL
+          )
+          test "$dependency_counts" = $'SERVICE_DEPENDENCY_CREATED|6\nSERVICE_DEPENDENCY_DELETED|3'
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |
