@@ -364,6 +364,60 @@ def check_asset_categories(operator, operator_b):
     assert request("auth/logout", data={}, token=viewer)[0] == 204
 
 
+def check_site_catalog(operator, operator_b):
+    concessions = "inventory/concessions"
+    locality_types = "inventory/locality-types"
+    sites = "inventory/sites"
+    concession_payload = {"code": " regional ", "name": "Unidade Regional", "region": "Sul"}
+    locality_payload = {"code": "ponto remoto", "label": "Ponto remoto"}
+    assert request(concessions)[0] == 401
+    assert request(locality_types, data={**locality_payload, "tenant_id": TENANT_B}, token=operator)[0] == 422
+
+    status, concession, headers = request(concessions, data=concession_payload, token=operator)
+    assert status == 201 and headers["Cache-Control"] == "no-store", (status, concession)
+    assert concession["code"] == "REGIONAL" and concession["tenant_id"] == TENANT_A
+    assert request(concessions, data=concession_payload, token=operator)[0] == 409
+    status, concession_b, _ = request(concessions, data=concession_payload, token=operator_b)
+    assert status == 201 and concession_b["tenant_id"] == TENANT_B
+
+    status, locality, _ = request(locality_types, data=locality_payload, token=operator)
+    assert status == 201 and locality["code"] == "PONTO_REMOTO" and locality["tenant_id"] == TENANT_A
+    assert request(locality_types, data={**locality_payload, "code": "PONTO_REMOTO"}, token=operator)[0] == 409
+    status, locality_b, _ = request(locality_types, data=locality_payload, token=operator_b)
+    assert status == 201 and locality_b["tenant_id"] == TENANT_B
+
+    for endpoint, own, foreign in ((concessions, concession, concession_b), (locality_types, locality, locality_b)):
+        assert request(f"{endpoint}?limit=1", token=operator)[:2] == (200, {"items": [own], "next_after": None})
+        assert request(endpoint, token=operator_b)[:2] == (200, {"items": [foreign], "next_after": None})
+
+    payload = {"code": "geo-site", "name": "Site categorizado", "concession_id": concession["id"], "locality_type_id": locality["id"]}
+    assert request(sites, data={**payload, "concession_id": concession_b["id"]}, token=operator)[0] == 422
+    assert request(sites, data={**payload, "locality_type_id": locality_b["id"]}, token=operator)[0] == 422
+    status, site, _ = request(sites, data=payload, token=operator)
+    assert status == 201 and site["concession_id"] == concession["id"] and site["locality_type_id"] == locality["id"]
+    path = f"{sites}/{site['id']}"
+
+    def update(data, token=operator):
+        return request(path, data=data, token=token, method="PATCH")
+
+    assert update({"concession_id": concession_b["id"]}, token=operator_b)[0] == 404
+    assert update({"concession_id": concession_b["id"], "locality_type_id": None})[0] == 422
+    assert update({"locality_type_id": locality_b["id"]})[0] == 422
+    status, changed, _ = update({"concession_id": None})
+    assert status == 200 and changed["concession_id"] is None and changed["locality_type_id"] == locality["id"]
+    status, page, _ = request(sites, token=operator)
+    assert status == 200 and changed in page["items"]
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request(locality_types, token=viewer)[0] == 200
+    assert request(concessions, data=concession_payload, token=viewer)[0] == 403
+    assert request(locality_types, data=locality_payload, token=viewer)[0] == 403
+    assert update({"concession_id": concession["id"]}, token=viewer)[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -424,12 +478,13 @@ def main():
     check_service_dependencies(operator_token, operator_b_token)
     check_topology(operator_token, operator_b_token)
     check_asset_categories(operator_token, operator_b_token)
+    check_site_catalog(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, inventário, catálogo, dependências, topologia e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, inventário, catálogos, dependências, topologia e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":

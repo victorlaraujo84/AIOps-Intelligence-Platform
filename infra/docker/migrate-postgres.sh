@@ -23,6 +23,7 @@ service_writer=$(sha256sum 011_service_writer.sql)
 service_dependencies=$(sha256sum 012_service_dependencies.sql)
 topology_edges=$(sha256sum 013_topology_edges.sql)
 asset_categories=$(sha256sum 014_asset_categories.sql)
+site_catalog=$(sha256sum 015_site_catalog.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -33,4 +34,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="service_dependencies_sha=${service_dependencies%% *}" \
   --set="topology_edges_sha=${topology_edges%% *}" \
   --set="asset_categories_sha=${asset_categories%% *}" \
+  --set="site_catalog_sha=${site_catalog%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql
