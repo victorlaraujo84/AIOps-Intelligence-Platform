@@ -57,6 +57,12 @@ COMMIT;
 
 A configuração é local à transação. O backend deve controlar o valor a partir da sessão autenticada, pois o PostgreSQL trata o parâmetro de sessão como contexto fornecido pelo cliente de banco. Reserve essa conta ao backend de confiança. A criação da conta de login, a integração de runtime e as permissões de escrita permanecem etapas separadas.
 
+### Integridade de vínculos por tenant
+
+A migração 004 valida as referências de inventário, topologia, serviços, eventos, incidentes, métricas, logs, anomalias e checkpoints usando o par `(tenant_id, id)`. Nas referências opcionais, a remoção do objeto limpa apenas o campo do vínculo. As referências de autoria e aprovação usam o modelo de usuários administrativos existente.
+
+Ao atualizar um banco com dados, a migração valida os vínculos já cadastrados. Um vínculo divergente interrompe a transação e mantém a versão anterior. Corrija os registros com base na origem dos dados, em uma etapa revisada antes de reexecutar o migrador. Aplique em janela de manutenção, pois a validação das chaves pode bloquear gravações.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
