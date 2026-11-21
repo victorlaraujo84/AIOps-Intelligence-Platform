@@ -33,7 +33,7 @@ async def inventory_write_transaction(
 
     try:
         async with pool.acquire(timeout=5) as connection:
-            async with connection.transaction():
+            async with connection.transaction(isolation="read_committed"):
                 await connection.execute(f"SET LOCAL ROLE {role}")
                 await connection.execute(
                     "SELECT pg_catalog.set_config('app.current_tenant_id', $1, true),"
@@ -51,12 +51,17 @@ async def inventory_write_transaction(
             raise HTTPException(409, "Já existe um serviço com este código neste tenant.", headers=AUTH_HEADERS) from None
         if isinstance(error, asyncpg.ForeignKeyViolationError) and error.constraint_name == "assets_site_id_fkey":
             raise HTTPException(422, "Site informado indisponível neste tenant.", headers=AUTH_HEADERS) from None
+        if isinstance(error, asyncpg.ForeignKeyViolationError):
+            if error.constraint_name == "service_dependencies_service_id_fkey":
+                raise HTTPException(404, "Serviço não encontrado.", headers=AUTH_HEADERS) from None
+            if error.constraint_name in {"service_dependencies_asset_id_fkey", "service_dependencies_upstream_service_id_fkey"}:
+                raise HTTPException(422, "Alvo da dependência indisponível neste tenant.", headers=AUTH_HEADERS) from None
         raise HTTPException(503, f"Gravação de {resource_label} temporariamente indisponível.", headers=AUTH_HEADERS) from None
 
 
 async def audit_inventory_write(
     connection: asyncpg.Connection, tenant: UUID, identity: asyncpg.Record,
-    action: str, resource: Literal["site", "asset", "service"], resource_id: UUID,
+    action: str, resource: Literal["site", "asset", "service", "service_dependency"], resource_id: UUID,
 ):
     await connection.execute(
         """

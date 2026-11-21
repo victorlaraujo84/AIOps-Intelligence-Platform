@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from .postgres_asset_write import postgres_asset_write_lifespan, router as postgres_asset_write_router
 from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_router
 from .postgres_inventory import postgres_inventory_lifespan, router as postgres_inventory_router
+from .postgres_service_dependencies import router as postgres_service_dependencies_router
 from .postgres_service_write import postgres_service_write_lifespan, router as postgres_service_write_router
 from .postgres_site_write import postgres_site_write_lifespan, router as postgres_site_write_router
 from .schemas import HonestState
@@ -34,6 +35,7 @@ app.include_router(postgres_inventory_router)
 app.include_router(postgres_site_write_router)
 app.include_router(postgres_asset_write_router)
 app.include_router(postgres_service_write_router)
+app.include_router(postgres_service_dependencies_router)
 
 
 @app.get("/health")

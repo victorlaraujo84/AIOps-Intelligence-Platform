@@ -160,6 +160,16 @@ GRANT aiops_service_writer TO aiops_service_write_runtime WITH SET TRUE;
 
 Configure `AIOPS_POSTGRES_SERVICE_WRITE_DSN` no perfil `core`. Use `POST /api/v1/inventory/services` para cadastrar código e nome. Domínio, criticidade, equipe responsável, meta de SLA e descrição são opcionais. `PATCH /api/v1/inventory/services/{id}` permite editar os dados cadastrais. O código identifica o serviço dentro do tenant e permanece fixo. A meta de SLA aceita valores de 0 a 100 pontos percentuais. O estado operacional inicial é `NO_DATA`. Cada alteração registra auditoria na mesma transação. Para desativar a escrita, remova esse DSN e recrie a API.
 
+### Dependências de serviços
+
+A migração 012 amplia o papel de serviços para gerenciar vínculos entre um serviço e um ativo ou serviço upstream do mesmo tenant. A API usa os DSNs existentes de leitura e escrita do inventário.
+
+- `GET /api/v1/inventory/services/{id}/dependencies` lista os vínculos e aceita `limit` e `after`.
+- `POST /api/v1/inventory/services/{id}/dependencies` recebe `asset_id`, `upstream_service_id` ou ambos. O papel do vínculo aceita `primary`, `redundant` ou `supporting`. O peso deve ser positivo.
+- `DELETE /api/v1/inventory/services/{id}/dependencies/{dependency_id}` remove o vínculo indicado.
+
+O banco verifica os vínculos com chaves estrangeiras compostas por tenant. A API serializa a inclusão de vínculos upstream por tenant para impedir ciclos em requisições simultâneas. Cadastro e remoção registram auditoria na transação. O DSN de escrita de serviços controla ambas as operações.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
