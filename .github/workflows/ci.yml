@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -275,6 +275,25 @@ jobs:
           SQL
           )
           test "$users_audit" = $'USER_ACTIVATED|1\nUSER_CREATED|1\nUSER_DEACTIVATED|1'
+      - name: Validar cadastro de tenants no piloto
+        shell: bash
+        run: |
+          AIOPS_POSTGRES_PILOT_CREATE_TENANTS=true docker compose -f compose.yaml -f compose.postgres-console.yaml \
+            -f compose.postgres-pilot.yaml --profile core up -d --no-deps --force-recreate --wait web
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --create-tenants
+          result=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT count(*) FROM tenants t JOIN audit_logs a
+            ON a.tenant_id = t.id AND a.resource_id = t.id::text
+          JOIN users u ON u.id = a.actor_user_id AND u.role = 'super_admin'
+          WHERE a.action = 'TENANT_CREATED' AND a.actor_role = u.role AND a.resource_type = 'tenant'
+            AND a.details_json ->> 'slug' = t.slug AND t.status = 'active'
+            AND (t.slug = 'tenant-ci-concorrente' OR (t.slug = 'tenant-novo-ci' AND t.document = 'TESTE-020'));
+          SQL
+          )
+          test "$result" = 2
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, 
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, StringConstraints
 
 
 bearer = HTTPBearer(auto_error=False)
@@ -59,6 +59,14 @@ class LoginRequest(BaseModel):
 
 class SelectTenantRequest(BaseModel):
     tenant_id: UUID
+
+
+class NewTenantRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=2, max_length=200)]
+    slug: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = None
+    document: Annotated[str, StringConstraints(strip_whitespace=True, max_length=80)] | None = None
 
 
 def derive_scrypt(password: str, salt: str) -> bytes:
@@ -207,6 +215,40 @@ async def list_tenants(
         "items": [dict(row) for row in rows[:limit]],
         "next_after": rows[limit - 1]["id"] if len(rows) > limit else None,
     }
+
+
+@router.post("/tenants", status_code=201)
+async def create_tenant(
+    body: NewTenantRequest,
+    response: Response,
+    auth: Annotated[PostgresAuth, Depends(get_auth)],
+    token: Annotated[str, Depends(get_token)],
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+):
+    forbidden = "Somente administradores globais podem cadastrar tenants."
+    if identity["role"] != "super_admin":
+        raise HTTPException(403, forbidden, headers=AUTH_HEADERS)
+    slug = re.sub(r"[^a-z0-9]+", "-", (body.slug or body.name).lower()).strip("-")
+    if not slug:
+        raise HTTPException(422, "Informe um identificador com letras de A a Z ou números.", headers=AUTH_HEADERS)
+    try:
+        tenant = await auth.pool.fetchrow(
+            "SELECT * FROM aiops_auth.create_tenant($1, $2, $3, $4)",
+            auth.token_hash(token), body.name, slug, body.document, timeout=5,
+        )
+    except asyncpg.PostgresError as error:
+        if error.sqlstate == "28000":
+            raise unauthorized() from None
+        status, message = {
+            "42501": (403, forbidden),
+            "22023": (422, "Dados de tenant inválidos."),
+            "P1004": (409, "Já existe um tenant com este identificador."),
+        }.get(error.sqlstate, (503, "Cadastro de tenants indisponível."))
+        raise HTTPException(status, message, headers=AUTH_HEADERS) from None
+    except (asyncpg.InterfaceError, OSError, TimeoutError):
+        raise HTTPException(503, "Cadastro de tenants indisponível.", headers=AUTH_HEADERS) from None
+    response.headers.update(AUTH_HEADERS)
+    return dict(tenant)
 
 
 @router.post("/switch-tenant")

@@ -249,6 +249,10 @@ docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postg
 
 A carga grava o inventário e os hashes de autenticação em uma transação, somente no banco dedicado e vazio. Inicie uma nova sessão no piloto com as credenciais da cópia. O piloto representa o momento do backup. Para voltar ao console original, acesse o endereço habitual e pare o projeto piloto com `docker compose stop` usando os mesmos arquivos e nome de projeto.
 
+#### Cadastro de tenants no piloto
+
+Aplique a migração 020 e habilite `AIOPS_POSTGRES_PILOT_CREATE_TENANTS=true` ao recriar o Web. Use **Novo tenant** com uma conta de administrador global. Informe o nome e, se necessário, o identificador e o documento. O PostgreSQL cria o tenant, os catálogos padrão de categorias e tipos de localidade e o registro de auditoria em uma transação. Se a sessão ainda estiver sem tenant ativo, o novo tenant passa a ser o ativo. Quando já existe uma seleção ativa, o novo tenant fica disponível no seletor. Para retirar o cadastro pelo navegador, desabilite a flag e recrie o Web.
+
 #### Administração de usuários do tenant no piloto
 
 Aplique a migração 019 antes de habilitar `AIOPS_POSTGRES_PILOT_MANAGE_USERS=true` e recrie a API e o Web do piloto. A aba **Usuários** fica disponível para administradores. O administrador global seleciona primeiro o tenant. A aba lista contas do tenant, cria administradores de tenant, operadores e leitores, e permite ativar ou desativar essas contas. A desativação encerra as sessões da conta na mesma transação que registra a auditoria. Para retirar o acesso pelo navegador, remova a flag e recrie o Web. A migração adiciona funções de banco e pode permanecer instalada com a flag desabilitada.
