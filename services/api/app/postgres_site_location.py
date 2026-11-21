@@ -7,9 +7,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory_write import inventory_write_transaction
-from .postgres_site_write import SITE_FIELDS, get_site_write_pool
+from .postgres_site_write import SITE_FIELDS, get_site_write_pool, site_write_identity
 
 
 class SiteLocationRoute(APIRoute):
@@ -46,7 +46,7 @@ async def verify_site_coordinates(
     site_id: UUID,
     body: VerifyCoordinates,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(site_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):

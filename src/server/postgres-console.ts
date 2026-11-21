@@ -143,20 +143,23 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   });
 
   if (siteWrites) {
-    async function writeSite(req: Request, res: Response) {
-      const token = authenticated(req, res);
-      if (!token) return;
-      const expected = req.get('X-AIOps-Expected-Tenant');
-      const id = req.params.siteId;
-      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
-        res.status(422).json({ error: 'Identificador de site ou tenant inválido.' });
-        return;
-      }
-      const path = id ? '/inventory/sites/' + id : '/inventory/sites';
-      forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
+    function writeSite(suffix: '' | '/verify-coords' = '') {
+      return async (req: Request, res: Response) => {
+        const token = authenticated(req, res);
+        if (!token) return;
+        const expected = req.get('X-AIOps-Expected-Tenant');
+        const id = req.params.siteId;
+        if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+          res.status(422).json({ error: 'Identificador de site ou tenant inválido.' });
+          return;
+        }
+        const path = id ? '/inventory/sites/' + id + suffix : '/inventory/sites';
+        forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
+      };
     }
-    router.post('/inventory/sites', writeSite);
-    router.patch('/inventory/sites/:siteId', writeSite);
+    router.post('/inventory/sites', writeSite());
+    router.patch('/inventory/sites/:siteId', writeSite());
+    router.patch('/inventory/sites/:siteId/verify-coords', writeSite('/verify-coords'));
   }
 
   router.get('/inventory/:resource', async (req, res) => {
