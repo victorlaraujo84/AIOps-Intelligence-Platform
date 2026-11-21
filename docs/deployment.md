@@ -124,6 +124,18 @@ GRANT aiops_tenant_reader TO aiops_inventory_runtime WITH SET TRUE;
 
 Configure `AIOPS_POSTGRES_INVENTORY_DSN` para essa conta. A API assume o papel de leitura e define o tenant somente para a transação. O contexto vem da sessão Bearer, e o banco aplica as políticas RLS. As rotas de sites, ativos e serviços sob `GET /api/v1/inventory/{resource}` aceitam `limit` e `after` e devolvem `items` e `next_after`. O Web ativo continua usando SQLite para seu inventário.
 
+### Cadastro e atualização de sites
+
+A migração 009 habilita um papel dedicado para criar e editar os campos cadastrais de sites. Provisione uma terceira conta, distinta das contas de autenticação e leitura:
+
+```sql
+CREATE ROLE aiops_site_write_runtime LOGIN NOINHERIT;
+GRANT aiops_site_writer TO aiops_site_write_runtime WITH SET TRUE;
+\password aiops_site_write_runtime
+```
+
+Configure `AIOPS_POSTGRES_SITE_WRITE_DSN` para essa conta em homologação. O FastAPI usa `POST /api/v1/inventory/sites` para cadastrar código e nome, com município, UF e criticidade opcionais. `PATCH /api/v1/inventory/sites/{id}` permite editar nome, município, UF e criticidade. A sessão fornece o tenant e a identidade do autor. A alteração e o registro de auditoria são gravados na mesma transação. O papel tem permissões específicas sobre sites e sobre a inserção da auditoria correspondente.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
