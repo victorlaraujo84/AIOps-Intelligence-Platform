@@ -63,6 +63,24 @@ A migração 004 valida as referências de inventário, topologia, serviços, ev
 
 Ao atualizar um banco com dados, a migração valida os vínculos já cadastrados. Um vínculo divergente interrompe a transação e mantém a versão anterior. Corrija os registros com base na origem dos dados, em uma etapa revisada antes de reexecutar o migrador. Aplique em janela de manutenção, pois a validação das chaves pode bloquear gravações.
 
+### Ensaio do inventário SQLite → PostgreSQL
+
+A migração 005 aceita a taxonomia extensível do SQLite. Ao excluir um site, o PostgreSQL preserva o ativo e limpa o vínculo, conforme o comportamento do console.
+
+Use um backup consistente, sem WAL pendente, e um projeto Compose dedicado com `POSTGRES_DB=aiops_inventory_rehearsal`. Suba apenas os serviços necessários do perfil `core` e aplique as migrações. Execute o ensaio no diretório desse projeto e mantenha o `.env` e o backup com permissões restritas.
+
+```bash
+export POSTGRES_DB=aiops_inventory_rehearsal
+docker compose -p aiops-inventory-rehearsal --profile core up -d --wait --build api
+set -o pipefail
+python3 scripts/rehearse-inventory-migration.py /caminho/privado/snapshot.db |
+  docker compose -p aiops-inventory-rehearsal --profile core exec -T postgres sh -ec '
+    exec psql -Xq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+  '
+```
+
+O ensaio compara as contagens de tenants, concessões, tipos de localidade, categorias, sites, ativos, serviços, dependências e topologia. A importação exige UUIDs válidos, referências dentro do tenant e PostgreSQL migrado até a versão 005. O PostGIS recebe geometria apenas para coordenadas verificadas. O script termina com `ROLLBACK`, inclusive quando as contagens coincidem. Usuários, sessões, credenciais, incidentes e telemetria têm contratos de migração próprios.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
