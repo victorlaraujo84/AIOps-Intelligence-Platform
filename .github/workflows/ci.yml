@@ -7,12 +7,12 @@ on:
   workflow_call:
     inputs:
       skip_itsm:
-        description: Excluir a suíte ITSM de uma candidata de telemetria
+        description: Excluir a suíte ITSM de uma candidata com validação de escopo reduzido
         type: boolean
         default: false
 
 env:
-  AIOPS_CI_SKIP_ITSM: ${{ inputs.skip_itsm || (github.event_name == 'pull_request' && github.head_ref == 'codex/telemetry-delivery-033') || (github.event_name == 'push' && github.ref_name == 'main' && contains(github.event.head_commit.message, '[telemetry-033]')) }}
+  AIOPS_CI_SKIP_ITSM: ${{ inputs.skip_itsm || (github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/delivery-no-itsm/')) || (github.event_name == 'push' && github.ref_name == 'main' && contains(github.event.head_commit.message, '[no-itsm-ci]')) }}
 
 permissions:
   contents: read
@@ -81,7 +81,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -631,6 +631,9 @@ jobs:
           dc exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
           ' < tests/integration/postgres-weather-scheduling.sql
+          dc exec -T postgres sh -ec '
+            exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' < tests/integration/postgres-incident-webhooks.sql
           dc exec -T postgres sh -ec 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -' <<'SQL'
           CREATE ROLE aiops_weather_ci LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'weather-ci-fixture-only';
           GRANT aiops_weather_worker TO aiops_weather_ci;
@@ -642,6 +645,20 @@ jobs:
           }
           AIOPS_POSTGRES_RELEASE_WRITES=false weather up -d --build --no-deps --wait --wait-timeout 60 weather-worker
           weather rm -s -f weather-worker
+          dc exec -T postgres sh -ec 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -' <<'SQL'
+          CREATE ROLE aiops_notification_ci LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD 'notification-ci-fixture-only';
+          GRANT aiops_notification_worker TO aiops_notification_ci;
+          SQL
+          export AIOPS_NOTIFICATION_DB_DSN=postgresql://aiops_notification_ci:notification-ci-fixture-only@postgres:5432/aiops_platform_postgres
+          export AIOPS_WEBHOOK_CONFIG_DIR="$RUNNER_TEMP/empty-webhooks"
+          mkdir "$AIOPS_WEBHOOK_CONFIG_DIR"
+          notify() {
+            docker compose --env-file "$RELEASE_ENV" -f compose.yaml -f compose.postgres-release.yaml \
+              -f compose.postgres-notifications.yaml --profile core --profile notifications "$@"
+          }
+          notify up -d --build --no-deps --wait --wait-timeout 60 notification-worker
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/release-ca.crt" node tests/integration/postgres-webhook-worker.mjs
+          notify rm -s -f notification-worker
       - name: Limpar volumes de teste
         if: always()
         run: |

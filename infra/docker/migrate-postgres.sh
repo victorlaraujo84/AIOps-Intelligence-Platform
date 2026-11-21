@@ -42,6 +42,7 @@ event_ingest=$(sha256sum 030_authenticated_event_ingest.sql)
 telemetry_ingest=$(sha256sum 031_authenticated_telemetry_ingest.sql)
 open_meteo=$(sha256sum 032_open_meteo_sync.sql)
 weather_schedule=$(sha256sum 033_open_meteo_scheduling.sql)
+webhooks=$(sha256sum 034_incident_webhooks.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -70,4 +71,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="telemetry_ingest_sha=${telemetry_ingest%% *}" \
   --set="open_meteo_sha=${open_meteo%% *}" \
   --set="weather_schedule_sha=${weather_schedule%% *}" \
+  --set="webhooks_sha=${webhooks%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql
