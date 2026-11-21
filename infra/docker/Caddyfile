@@ -1,0 +1,13 @@
+{
+	admin off
+	skip_install_trust
+}
+
+{$AIOPS_HOST:localhost} {
+	reverse_proxy web:3000
+}
+
+http://127.0.0.1:8081 {
+	bind 127.0.0.1
+	reverse_proxy /api/health web:3000
+}

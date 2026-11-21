@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { isTargetAuthorizedInScope, type CollectionProtocol } from './collection.ts';
 import { initializeTenantTaxonomy, openDatabase, writeAuditLog } from './db.ts';
+import { createHttpApp } from './http-app.ts';
+import { postgresConsoleRouter } from './postgres-console.ts';
+import { validateOutboundHttpsUrl } from './outbound-http.ts';
 import {
   CONNECTOR_CATALOG,
   geocodeAddressNominatim,
@@ -21,10 +24,12 @@ import {
 import {
   encryptCredentials,
   generateSessionToken,
+  getBootstrapToken,
   hashPassword,
   hashSessionToken,
   SlidingWindowRateLimiter,
   validateExternalUrl,
+  validateProductionSecrets,
   verifyPassword,
 } from './security.ts';
 import {
@@ -57,20 +62,15 @@ function parseCookies(header: string | undefined): Record<string, string> {
 }
 
 function getClientIp(req: Request): string {
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded.length > 0) {
-    return forwarded.split(',')[0].trim();
-  }
-  return req.socket.remoteAddress ?? 'unknown';
+  return req.ip ?? req.socket.remoteAddress ?? 'unknown';
 }
 
 function getSessionCookieOptions(req: Request) {
-  const proto = req.headers['x-forwarded-proto'];
-  const isHttps = req.secure || (typeof proto === 'string' && proto.split(',')[0].trim() === 'https');
+  const isProduction = req.app.get('env') === 'production';
   return {
     httpOnly: true,
-    sameSite: (isHttps ? 'none' : 'lax') as 'none' | 'lax',
-    secure: isHttps,
+    sameSite: (!isProduction && req.secure ? 'none' : 'lax') as 'none' | 'lax',
+    secure: isProduction || req.secure,
     path: '/',
     maxAge: SESSION_TTL_MS,
   };
@@ -85,21 +85,15 @@ function isAdminRole(role: Role): boolean {
 }
 
 export function createApp(options: { dbPath?: string; db?: Database.Database } = {}) {
+  validateProductionSecrets();
+  const bootstrapToken = getBootstrapToken();
+  const app = createHttpApp();
+  const isProduction = app.get('env') === 'production';
+  const requireBootstrapToken = isProduction || Boolean(bootstrapToken);
   const db = options.db ?? openDatabase(options.dbPath ?? process.env.SQLITE_DB_PATH ?? './data/aiops.db');
-  const app = express();
 
   const authRateLimiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
   const connectorTestLimiter = new SlidingWindowRateLimiter(30, 5 * 60 * 1000);
-
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
-
-  // Cabeçalhos básicos de segurança
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    next();
-  });
 
   // Health / Readiness checks (sem vazar segredos ou dados de tenants)
   app.get('/api/health', (_req, res) => {
@@ -110,6 +104,9 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       res.status(503).json({ status: 'degraded', db: 'error' });
     }
   });
+
+  const postgresConsole = process.env.AIOPS_POSTGRES_CONSOLE === 'true';
+  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, false, false));
 
   // Middleware de autenticação
   function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction) {
@@ -225,7 +222,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
 
   app.get('/api/auth/status', (_req, res) => {
     const count = (db.prepare('SELECT COUNT(*) AS cnt FROM users').get() as { cnt: number }).cnt;
-    res.json({ bootstrap_required: count === 0 });
+    res.json({ bootstrap_required: count === 0, bootstrap_token_required: count === 0 && requireBootstrapToken });
   });
 
   app.post('/api/auth/bootstrap', (req, res) => {
@@ -233,6 +230,29 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     if (count > 0) {
       res.status(403).json({ error: 'Bootstrap já concluído. Use o login padrão.' });
       return;
+    }
+
+    if (requireBootstrapToken) {
+      if (!bootstrapToken) {
+        res.status(503).json({ error: 'Configure AIOPS_BOOTSTRAP_TOKEN no servidor para inicializar a plataforma.' });
+        return;
+      }
+      if (isProduction && !req.secure) {
+        res.status(403).json({ error: 'A inicialização em produção exige HTTPS.' });
+        return;
+      }
+      const rate = authRateLimiter.check(`bootstrap:${getClientIp(req)}`);
+      if (!rate.allowed) {
+        res.status(429).json({ error: 'Muitas tentativas de inicialização. Aguarde alguns minutos.' });
+        return;
+      }
+      const supplied = req.get('X-Bootstrap-Token') ?? '';
+      const expectedHash = crypto.createHash('sha256').update(bootstrapToken).digest();
+      const suppliedHash = crypto.createHash('sha256').update(supplied).digest();
+      if (!crypto.timingSafeEqual(expectedHash, suppliedHash)) {
+        res.status(403).json({ error: 'Token de inicialização inválido.' });
+        return;
+      }
     }
 
     const { email, full_name, password, initial_tenant_name, initial_tenant_slug } = req.body ?? {};
@@ -246,9 +266,14 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     const normalizedEmail = String(email).trim().toLowerCase();
     const passwordHash = hashPassword(String(password));
 
+    const token = generateSessionToken();
+    const sessionId = crypto.randomUUID();
+    const expires = new Date(Date.now() + SESSION_TTL_MS).toISOString();
     let createdTenantId: string | null = null;
 
     const trx = db.transaction(() => {
+      const existingUser = db.prepare('SELECT 1 FROM users LIMIT 1').get();
+      if (existingUser) return false;
       if (initial_tenant_name && String(initial_tenant_name).trim().length > 0) {
         const tId = crypto.randomUUID();
         const slug = (initial_tenant_slug || String(initial_tenant_name))
@@ -278,16 +303,16 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
         details: { initial_tenant_id: createdTenantId },
         ip_address: getClientIp(req),
       });
+      db.prepare(
+        `INSERT INTO sessions (id, user_id, active_tenant_id, token_hash, expires_at_utc, created_at_utc) VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(sessionId, userId, createdTenantId, hashSessionToken(token), expires, now);
+      return true;
     });
 
-    trx();
-
-    const token = generateSessionToken();
-    const sessionId = crypto.randomUUID();
-    const expires = new Date(Date.now() + SESSION_TTL_MS).toISOString();
-    db.prepare(
-      `INSERT INTO sessions (id, user_id, active_tenant_id, token_hash, expires_at_utc, created_at_utc) VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(sessionId, userId, createdTenantId, hashSessionToken(token), expires, now);
+    if (!trx.immediate()) {
+      res.status(403).json({ error: 'Bootstrap já concluído. Use o login padrão.' });
+      return;
+    }
 
     res.cookie(SESSION_COOKIE_NAME, token, getSessionCookieOptions(req));
 
@@ -1567,7 +1592,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     }
 
     if (endpoint_url) {
-      const ssrf = validateExternalUrl(String(endpoint_url));
+      const ssrf = validateOutboundHttpsUrl(String(endpoint_url));
       if (!ssrf.ok) {
         res.status(400).json({ error: ssrf.reason });
         return;

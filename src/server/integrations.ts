@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import crypto from 'node:crypto';
-import { decryptCredentials, validateExternalUrl } from './security.ts';
+import { decryptCredentials } from './security.ts';
+import { getOutboundHttps, validateOutboundHttpsUrl } from './outbound-http.ts';
 import { correlateFailureEvent, detectMetricAnomaly } from './correlation.ts';
 
 export interface ConnectorCatalogItem {
@@ -164,15 +165,12 @@ export async function lookupCepAddress(rawCep: string): Promise<CepLookupResult>
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    const resp = await fetch(`https://brasilapi.com.br/api/cep/v2/${digits}`, {
-      signal: controller.signal,
+    const resp = await getOutboundHttps(`https://brasilapi.com.br/api/cep/v2/${digits}`, {
+      timeoutMs: 5000,
       headers: { Accept: 'application/json' },
     });
-    clearTimeout(timer);
     if (resp.ok) {
-      const data = (await resp.json()) as {
+      const data = resp.json() as {
         cep?: string;
         street?: string;
         neighborhood?: string;
@@ -194,40 +192,34 @@ export async function lookupCepAddress(rawCep: string): Promise<CepLookupResult>
     // Fallback para ViaCEP
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  try {
-    const resp = await fetch(`https://viacep.com.br/ws/${digits}/json/`, {
-      signal: controller.signal,
-      headers: { Accept: 'application/json' },
-    });
-    if (!resp.ok) {
-      throw new Error(`ViaCEP retornou HTTP ${resp.status}`);
-    }
-    const data = (await resp.json()) as {
-      erro?: boolean;
-      cep?: string;
-      logradouro?: string;
-      bairro?: string;
-      localidade?: string;
-      uf?: string;
-    };
-    if (data.erro) {
-      throw new Error('CEP não encontrado na base oficial.');
-    }
-    return {
-      cep: data.cep ?? digits,
-      address: data.logradouro ?? '',
-      neighborhood: data.bairro ?? '',
-      municipality: data.localidade ?? '',
-      uf: data.uf ?? '',
-      source: 'viacep',
-      coordinates_note:
-        'CEP resolve apenas endereço postal. Latitude e longitude exigem geocodificação ou verificação manual.',
-    };
-  } finally {
-    clearTimeout(timer);
+  const resp = await getOutboundHttps(`https://viacep.com.br/ws/${digits}/json/`, {
+    timeoutMs: 5000,
+    headers: { Accept: 'application/json' },
+  });
+  if (!resp.ok) {
+    throw new Error(`ViaCEP retornou HTTP ${resp.status}`);
   }
+  const data = resp.json() as {
+    erro?: boolean;
+    cep?: string;
+    logradouro?: string;
+    bairro?: string;
+    localidade?: string;
+    uf?: string;
+  };
+  if (data.erro) {
+    throw new Error('CEP não encontrado na base oficial.');
+  }
+  return {
+    cep: data.cep ?? digits,
+    address: data.logradouro ?? '',
+    neighborhood: data.bairro ?? '',
+    municipality: data.localidade ?? '',
+    uf: data.uf ?? '',
+    source: 'viacep',
+    coordinates_note:
+      'CEP resolve apenas endereço postal. Latitude e longitude exigem geocodificação ou verificação manual.',
+  };
 }
 
 export async function geocodeAddressNominatim(query: {
@@ -244,33 +236,27 @@ export async function geocodeAddressNominatim(query: {
   url.searchParams.set('limit', '1');
   url.searchParams.set('countrycodes', 'br');
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
-  try {
-    const resp = await fetch(url.toString(), {
-      signal: controller.signal,
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': 'AIOps-Intelligence-Platform/1.0 (NOC-Geocoding)',
-      },
-    });
-    if (!resp.ok) {
-      throw new Error(`Nominatim retornou HTTP ${resp.status}`);
-    }
-    const results = (await resp.json()) as Array<{ lat: string; lon: string; display_name: string }>;
-    if (!results.length) return null;
-    const lat = Number(results[0].lat);
-    const lon = Number(results[0].lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    return {
-      latitude: lat,
-      longitude: lon,
-      display_name: results[0].display_name,
-      precision: 'geocodificada',
-    };
-  } finally {
-    clearTimeout(timer);
+  const resp = await getOutboundHttps(url.toString(), {
+    timeoutMs: 6000,
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'AIOps-Intelligence-Platform/1.0 (NOC-Geocoding)',
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`Nominatim retornou HTTP ${resp.status}`);
   }
+  const results = resp.json() as Array<{ lat: string; lon: string; display_name: string }>;
+  if (!results.length) return null;
+  const lat = Number(results[0].lat);
+  const lon = Number(results[0].lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return {
+    latitude: lat,
+    longitude: lon,
+    display_name: results[0].display_name,
+    precision: 'geocodificada',
+  };
 }
 
 export interface ConnectorRow {
@@ -302,14 +288,12 @@ export async function testConnectorConnectivity(
     const target =
       connector.endpoint_url ||
       'https://api.open-meteo.com/v1/forecast?latitude=-23.55&longitude=-46.63&current=temperature_2m';
-    const ssrf = validateExternalUrl(target);
+    const ssrf = validateOutboundHttpsUrl(target);
     if (!ssrf.ok) {
       return { ok: false, latency_ms: Date.now() - start, detail: ssrf.reason ?? 'URL bloqueada' };
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
     try {
-      const resp = await fetch(ssrf.parsedUrl!.toString(), { signal: controller.signal });
+      const resp = await getOutboundHttps(ssrf.parsedUrl!.toString(), { statusOnly: true });
       const latency_ms = Date.now() - start;
       if (!resp.ok) {
         return { ok: false, latency_ms, status_code: resp.status, detail: `Open-Meteo retornou HTTP ${resp.status}` };
@@ -321,8 +305,6 @@ export async function testConnectorConnectivity(
         latency_ms: Date.now() - start,
         detail: err instanceof Error ? err.message : 'Falha de rede ao consultar Open-Meteo',
       };
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -345,7 +327,7 @@ export async function testConnectorConnectivity(
     };
   }
 
-  const ssrf = validateExternalUrl(connector.endpoint_url);
+  const ssrf = validateOutboundHttpsUrl(connector.endpoint_url);
   if (!ssrf.ok) {
     return {
       ok: false,
@@ -366,14 +348,8 @@ export async function testConnectorConnectivity(
     }
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 6000);
   try {
-    const resp = await fetch(ssrf.parsedUrl!.toString(), {
-      method: 'GET',
-      headers,
-      signal: controller.signal,
-    });
+    const resp = await getOutboundHttps(ssrf.parsedUrl!.toString(), { headers, statusOnly: true });
     const latency_ms = Date.now() - start;
     if (!resp.ok) {
       return {
@@ -395,8 +371,6 @@ export async function testConnectorConnectivity(
       latency_ms: Date.now() - start,
       detail: err instanceof Error ? err.message : 'Timeout ou erro de rede ao testar conector.',
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -682,12 +656,13 @@ export function ingestOperationalLogs(
 
   const checkAsset = db.prepare('SELECT id, site_id FROM assets WHERE id = ? AND tenant_id = ?');
   const checkService = db.prepare('SELECT id FROM services WHERE id = ? AND tenant_id = ?');
+  const checkSite = db.prepare('SELECT id FROM sites WHERE id = ? AND tenant_id = ?');
 
   const trx = db.transaction(() => {
     for (const l of logs) {
       let validAssetId: string | null = null;
       let validServiceId: string | null = null;
-      let validSiteId: string | null = l.site_id ?? null;
+      let validSiteId = l.site_id && checkSite.get(l.site_id, tenantId) ? l.site_id : null;
 
       if (l.asset_id) {
         const a = checkAsset.get(l.asset_id, tenantId) as { id: string; site_id: string | null } | undefined;
@@ -995,15 +970,13 @@ export async function syncOpenMeteoForTenant(
     url.searchParams.set('forecast_days', '1');
     url.searchParams.set('timezone', 'UTC');
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7000);
     try {
-      const resp = await fetch(url.toString(), { signal: controller.signal });
+      const resp = await getOutboundHttps(url.toString(), { timeoutMs: 7000 });
       if (!resp.ok) {
         errors.push(`${site.code}: HTTP ${resp.status}`);
         continue;
       }
-      const data = (await resp.json()) as {
+      const data = resp.json() as {
         current?: {
           time: string;
           temperature_2m?: number;
@@ -1095,8 +1068,6 @@ export async function syncOpenMeteoForTenant(
       totalDeduplicated += evRes.deduplicated;
     } catch (err) {
       errors.push(`${site.code}: ${err instanceof Error ? err.message : 'erro de rede'}`);
-    } finally {
-      clearTimeout(timer);
     }
   }
 

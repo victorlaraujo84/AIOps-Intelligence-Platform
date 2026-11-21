@@ -9,5 +9,9 @@ COPY . .
 RUN npm run check:sqlite
 RUN npm run build
 
+RUN mkdir -p /app/data \
+    && touch /app/data/.docker-volume \
+    && chown -R node:node /app/data
+USER node
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["node", "--import", "tsx", "server.ts"]

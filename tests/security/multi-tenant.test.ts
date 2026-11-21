@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { createApp } from '../../src/server/app.ts';
+import { runSqliteMigrations } from '../../src/server/migrations.ts';
 
 async function startTestServer() {
   const { app, db } = createApp({ dbPath: ':memory:' });
@@ -17,7 +18,7 @@ async function apiJson(baseUrl: string, path: string, options: RequestInit & { t
   if (options.token) headers.Authorization = `Bearer ${options.token}`;
   const resp = await fetch(`${baseUrl}${path}`, { ...options, headers: { ...headers, ...(options.headers as Record<string, string>) } });
   const body = await resp.json().catch(() => ({}));
-  return { status: resp.status, body };
+  return { status: resp.status, body, headers: resp.headers };
 }
 
 test('isolamento multi-tenant, RBAC estrito e auditoria de troca de tenant', async () => {
@@ -140,11 +141,127 @@ test('isolamento multi-tenant, RBAC estrito e auditoria de troca de tenant', asy
     });
     assert.equal(viewerWrite.status, 403);
 
+    const scope = await apiJson(baseUrl, '/api/collection/scopes', {
+      method: 'POST',
+      token: superToken,
+      body: JSON.stringify({ protocol: 'otlp', target_cidr_or_host: 'collector.test.local' }),
+    });
+    assert.equal(scope.status, 201);
+    const log = {
+      idempotency_key: 'tenant-log-1',
+      message: 'Log de teste',
+      severity: 'INFO',
+      observed_at_utc: '2026-11-20T00:00:00Z',
+      source: 'fixture',
+      site_id: siteA.body.site.id,
+    };
+    const ingested = await apiJson(baseUrl, '/api/collection/otlp/v1/logs', {
+      method: 'POST',
+      token: superToken,
+      body: JSON.stringify({ source_target: 'collector.test.local', logs: [log] }),
+    });
+    assert.equal(ingested.status, 201);
+    assert.equal(ingested.body.ingested, 1);
+    const betaLogs = await apiJson(baseUrl, '/api/logs', { token: viewerBToken });
+    assert.equal(betaLogs.status, 200);
+    assert.equal(betaLogs.body.logs.length, 1);
+    assert.equal(betaLogs.body.logs[0].site_id, null);
+
+    const logId = betaLogs.body.logs[0].id;
+    const updateSite = db.prepare('UPDATE operational_logs SET site_id = ? WHERE id = ?');
+    assert.throws(() => updateSite.run(siteA.body.site.id, logId), /Log site must belong to its tenant/);
+
+    // Recria um vínculo legado para verificar que a migração preserva o log.
+    db.exec(`
+      DROP TRIGGER operational_logs_site_tenant_insert;
+      DROP TRIGGER operational_logs_site_tenant_update;
+      DELETE FROM schema_migrations WHERE version = 3;
+    `);
+    updateSite.run(siteA.body.site.id, logId);
+    runSqliteMigrations(db, ':memory:');
+    assert.deepEqual(
+      db.prepare('SELECT site_id, message FROM operational_logs WHERE id = ?').get(logId),
+      { site_id: null, message: log.message },
+    );
+
     // 8. Verifica trilha de auditoria para SUPER_ADMIN_TENANT_SWITCH e CROSS_TENANT_ACCESS_DENIED
     const auditRows = db.prepare('SELECT action FROM audit_logs').all() as Array<{ action: string }>;
     const actions = auditRows.map((r) => r.action);
     assert.ok(actions.includes('SUPER_ADMIN_TENANT_SWITCH'));
     assert.ok(actions.includes('CROSS_TENANT_ACCESS_DENIED'));
+  } finally {
+    server.close();
+    db.close();
+  }
+});
+
+test('produção exige segredos explícitos e protege o primeiro bootstrap', async (t) => {
+  const keys = ['NODE_ENV', 'AUTH_SESSION_SECRET', 'CREDENTIAL_ENCRYPTION_KEY', 'AIOPS_BOOTSTRAP_TOKEN', 'AIOPS_TRUST_PROXY'];
+  const savedEnv = new Map(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  process.env.NODE_ENV = 'production';
+  delete process.env.AUTH_SESSION_SECRET;
+  delete process.env.CREDENTIAL_ENCRYPTION_KEY;
+  delete process.env.AIOPS_TRUST_PROXY;
+  assert.throws(() => createApp({ dbPath: ':memory:' }), /AUTH_SESSION_SECRET/);
+  process.env.AUTH_SESSION_SECRET = 'test-fixture-production-session-secret';
+  assert.throws(() => createApp({ dbPath: ':memory:' }), /CREDENTIAL_ENCRYPTION_KEY/);
+  process.env.CREDENTIAL_ENCRYPTION_KEY = 'test-fixture-production-encryption-key';
+  delete process.env.AIOPS_BOOTSTRAP_TOKEN;
+
+  const bootstrap = {
+    method: 'POST',
+    body: JSON.stringify({ email: 'bootstrap@test.local', full_name: 'Bootstrap Test', password: 'TestPassword123' }),
+  };
+  const unconfigured = await startTestServer();
+  try {
+    const unavailable = await apiJson(unconfigured.baseUrl, '/api/auth/bootstrap', bootstrap);
+    assert.equal(unavailable.status, 503);
+  } finally {
+    unconfigured.server.close();
+    unconfigured.db.close();
+  }
+
+  const token = 'test-fixture-production-bootstrap-token';
+  process.env.AIOPS_BOOTSTRAP_TOKEN = token;
+  const direct = await startTestServer();
+  try {
+    const denied = await apiJson(direct.baseUrl, '/api/auth/bootstrap', {
+      ...bootstrap,
+      headers: { 'X-Bootstrap-Token': token, 'X-Forwarded-Proto': 'https' },
+    });
+    assert.equal(denied.status, 403);
+    assert.match(denied.body.error, /HTTPS/);
+  } finally {
+    direct.server.close();
+    direct.db.close();
+  }
+
+  process.env.AIOPS_TRUST_PROXY = '127.0.0.1';
+  const throughProxy = { ...bootstrap, headers: { 'X-Forwarded-Proto': 'https', 'X-Forwarded-For': '192.0.2.4' } };
+  const { server, db, baseUrl } = await startTestServer();
+  try {
+    const state = await apiJson(baseUrl, '/api/auth/status');
+    assert.equal(state.body.bootstrap_token_required, true);
+    assert.equal((await apiJson(baseUrl, '/api/auth/bootstrap', throughProxy)).status, 403);
+    assert.equal(
+      (await apiJson(baseUrl, '/api/auth/bootstrap', { ...throughProxy, headers: { ...throughProxy.headers, 'X-Bootstrap-Token': 'wrong' } })).status,
+      403,
+    );
+    const authorized = { ...throughProxy, headers: { ...throughProxy.headers, 'X-Bootstrap-Token': token } };
+    const created = await apiJson(baseUrl, '/api/auth/bootstrap', authorized);
+    assert.equal(created.status, 201);
+    assert.match(created.headers.get('set-cookie') ?? '', /HttpOnly; Secure; SameSite=Lax/);
+    assert.equal(
+      (db.prepare("SELECT ip_address FROM audit_logs WHERE action = 'SYSTEM_BOOTSTRAP_SUPER_ADMIN'").get() as { ip_address: string }).ip_address,
+      '192.0.2.4',
+    );
+    assert.equal((await apiJson(baseUrl, '/api/auth/bootstrap', authorized)).status, 403);
   } finally {
     server.close();
     db.close();

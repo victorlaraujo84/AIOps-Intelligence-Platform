@@ -5,13 +5,15 @@ import type { AuthUser } from '../shared/types.ts';
 
 interface AuthScreenProps {
   bootstrapRequired: boolean;
+  bootstrapTokenRequired: boolean;
   onAuthenticated: (user: AuthUser) => void;
 }
 
-export function AuthScreen({ bootstrapRequired, onAuthenticated }: AuthScreenProps) {
+export function AuthScreen({ bootstrapRequired, bootstrapTokenRequired, onAuthenticated }: AuthScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [bootstrapToken, setBootstrapToken] = useState('');
   const [initialTenantName, setInitialTenantName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -24,6 +26,7 @@ export function AuthScreen({ bootstrapRequired, onAuthenticated }: AuthScreenPro
       if (bootstrapRequired) {
         const res = await apiRequest<{ token: string; user: AuthUser }>('/api/auth/bootstrap', {
           method: 'POST',
+          headers: bootstrapTokenRequired ? { 'X-Bootstrap-Token': bootstrapToken } : undefined,
           body: JSON.stringify({
             email,
             full_name: fullName,
@@ -86,6 +89,23 @@ export function AuthScreen({ bootstrapRequired, onAuthenticated }: AuthScreenPro
                 onChange={(e) => setFullName(e.target.value)}
                 placeholder="Ex.: Ana Paula Silva"
                 className="w-full rounded-md border border-slate-700 bg-[#0B111E] px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          )}
+
+          {bootstrapRequired && bootstrapTokenRequired && (
+            <div>
+              <label htmlFor="bootstrapToken" className="mb-1.5 block text-xs font-medium text-slate-300">
+                Token de inicialização
+              </label>
+              <input
+                id="bootstrapToken"
+                type="password"
+                required
+                autoComplete="off"
+                value={bootstrapToken}
+                onChange={(e) => setBootstrapToken(e.target.value)}
+                className="w-full rounded-md border border-slate-700 bg-[#0B111E] px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
               />
             </div>
           )}

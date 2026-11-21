@@ -1,0 +1,43 @@
+# Use with compose.yaml and --profile core.
+services:
+  web:
+    image: ${AIOPS_WEB_IMAGE:-aiops-platform-web:local}
+    environment:
+      SQLITE_DB_PATH: !reset null
+      AUTH_SESSION_SECRET: !reset null
+      CREDENTIAL_ENCRYPTION_KEY: !reset null
+      AIOPS_BOOTSTRAP_TOKEN: !reset null
+      AIOPS_POSTGRES_CONSOLE: "true"
+      AIOPS_POSTGRES_PILOT_ONLY: "true"
+      AIOPS_POSTGRES_PILOT_WRITE_SITES: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+      AIOPS_POSTGRES_PILOT_WRITE_ASSETS: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+      AIOPS_POSTGRES_PILOT_WRITE_SERVICES: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+      AIOPS_POSTGRES_PILOT_MANAGE_USERS: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+      AIOPS_POSTGRES_PILOT_CREATE_TENANTS: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+    volumes: !reset []
+    networks:
+      - edge
+      - backend
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    image: ${AIOPS_API_IMAGE:-aiops-platform-api:local}
+    environment:
+      AIOPS_POSTGRES_AUTH_DSN: ${AIOPS_POSTGRES_AUTH_DSN:?configure AIOPS_POSTGRES_AUTH_DSN}
+      AIOPS_POSTGRES_INVENTORY_DSN: ${AIOPS_POSTGRES_INVENTORY_DSN:?configure AIOPS_POSTGRES_INVENTORY_DSN}
+      AIOPS_POSTGRES_SITE_WRITE_DSN: ${AIOPS_POSTGRES_SITE_WRITE_DSN:?configure AIOPS_POSTGRES_SITE_WRITE_DSN}
+      AIOPS_POSTGRES_ASSET_WRITE_DSN: ${AIOPS_POSTGRES_ASSET_WRITE_DSN:?configure AIOPS_POSTGRES_ASSET_WRITE_DSN}
+      AIOPS_POSTGRES_SERVICE_WRITE_DSN: ${AIOPS_POSTGRES_SERVICE_WRITE_DSN:?configure AIOPS_POSTGRES_SERVICE_WRITE_DSN}
+      AIOPS_POSTGRES_AUTH_SESSION_SECRET: ${AIOPS_POSTGRES_AUTH_SESSION_SECRET:?configure AIOPS_POSTGRES_AUTH_SESSION_SECRET}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=4).close()"]
+
+  postgres:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aiops_platform_postgres}
+
+  postgres-migrate:
+    environment:
+      PGDATABASE: ${POSTGRES_DB:-aiops_platform_postgres}

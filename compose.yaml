@@ -1,27 +1,104 @@
 services:
+  proxy:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    environment:
+      AIOPS_HOST: ${AIOPS_HOST:-localhost}
+    ports:
+      - "${AIOPS_BIND_IP:-127.0.0.1}:80:80"
+      - "${AIOPS_BIND_IP:-127.0.0.1}:443:443"
+    networks:
+      edge:
+        ipv4_address: ${AIOPS_PROXY_IP:-172.31.250.254}
+    volumes:
+      - ./infra/docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    init: true
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      NODE_ENV: production
+      SQLITE_DB_PATH: /app/data/aiops.db
+      AUTH_SESSION_SECRET: ${AUTH_SESSION_SECRET:-}
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      AIOPS_BOOTSTRAP_TOKEN: ${AIOPS_BOOTSTRAP_TOKEN:-}
+      AIOPS_TRUST_PROXY: ${AIOPS_PROXY_IP:-172.31.250.254}
+    networks:
+      - edge
+    volumes:
+      - webdata:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
   postgres:
+    profiles: [core]
     image: postgis/postgis:16-3.4-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-aiops_platform}
       POSTGRES_USER: ${POSTGRES_USER:-aiops}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-CHANGE_ME_LOCAL_ONLY}
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    networks:
+      - backend
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./infra/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiops} -d ${POSTGRES_DB:-aiops_platform}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 5
 
+  postgres-migrate:
+    profiles: [core]
+    image: postgis/postgis:16-3.4-alpine
+    restart: "no"
+    user: postgres
+    read_only: true
+    entrypoint: ["sh", "/opt/aiops/migrate-postgres.sh"]
+    environment:
+      PGHOST: postgres
+      PGCONNECT_TIMEOUT: 10
+      PGDATABASE: ${POSTGRES_DB:-aiops_platform}
+      PGUSER: ${POSTGRES_USER:-aiops}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-}
+      AIOPS_POSTGRES_ADOPT_LEGACY: ${AIOPS_POSTGRES_ADOPT_LEGACY:-false}
+    networks:
+      - backend
+    volumes:
+      - ./infra/docker/migrate-postgres.sh:/opt/aiops/migrate-postgres.sh:ro
+      - ./infra/migrations:/opt/aiops/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   redis:
+    profiles: [core]
     image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - backend
     volumes:
       - redisdata:/data
     healthcheck:
@@ -31,48 +108,45 @@ services:
       retries: 5
 
   api:
+    profiles: [core]
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.api
+    init: true
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://aiops:CHANGE_ME_LOCAL_ONLY@postgres:5432/aiops_platform}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-    ports:
-      - "8000:8000"
+      AIOPS_POSTGRES_AUTH_DSN: ${AIOPS_POSTGRES_AUTH_DSN:-}
+      AIOPS_POSTGRES_INVENTORY_DSN: ${AIOPS_POSTGRES_INVENTORY_DSN:-}
+      AIOPS_POSTGRES_SITE_WRITE_DSN: ${AIOPS_POSTGRES_SITE_WRITE_DSN:-}
+      AIOPS_POSTGRES_ASSET_WRITE_DSN: ${AIOPS_POSTGRES_ASSET_WRITE_DSN:-}
+      AIOPS_POSTGRES_SERVICE_WRITE_DSN: ${AIOPS_POSTGRES_SERVICE_WRITE_DSN:-}
+      AIOPS_POSTGRES_AUTH_SESSION_SECRET: ${AIOPS_POSTGRES_AUTH_SESSION_SECRET:-}
+    networks:
+      - backend
     depends_on:
-      postgres:
-        condition: service_healthy
+      postgres-migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 15s
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).close()"]
+      interval: 10s
       timeout: 5s
       retries: 5
+    security_opt:
+      - no-new-privileges:true
 
-  web:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.web
-    restart: unless-stopped
-    environment:
-      PORT: 3000
-      NODE_ENV: production
-      SQLITE_DB_PATH: /app/data/aiops.db
-    ports:
-      - "3000:3000"
-    volumes:
-      - webdata:/app/data
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r => process.exit(r.ok ? 0 : 1))"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: ${AIOPS_PROXY_SUBNET:-172.31.250.0/24}
+  backend:
+    internal: true
 
 volumes:
+  webdata:
+  caddy_data:
+  caddy_config:
   pgdata:
   redisdata:
-  webdata:
