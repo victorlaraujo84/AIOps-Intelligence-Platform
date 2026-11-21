@@ -49,14 +49,14 @@ jobs:
       - name: Conferir se a versão está disponível
         shell: bash
         run: |
-          for service in web api; do
+          for service in web api itsm-worker; do
             ref="$IMAGE_NAMESPACE-$service:$RELEASE_VERSION"
             if docker manifest inspect "$ref" >/dev/null 2>&1; then
               printf 'A tag já existe para %s\n' "$service" >&2
               exit 1
             fi
           done
-      - name: Construir as duas imagens do mesmo commit
+      - name: Construir as imagens do mesmo commit
         run: |
           docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$SOURCE_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
@@ -64,7 +64,11 @@ jobs:
           docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$SOURCE_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             -f infra/docker/Dockerfile.api -t "$IMAGE_NAMESPACE-api:$RELEASE_VERSION" .
+          docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$SOURCE_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -f infra/docker/Dockerfile.itsm-worker -t "$IMAGE_NAMESPACE-itsm-worker:$RELEASE_VERSION" .
       - name: Publicar no GHCR
         run: |
           docker push "$IMAGE_NAMESPACE-api:$RELEASE_VERSION"
           docker push "$IMAGE_NAMESPACE-web:$RELEASE_VERSION"
+          docker push "$IMAGE_NAMESPACE-itsm-worker:$RELEASE_VERSION"
