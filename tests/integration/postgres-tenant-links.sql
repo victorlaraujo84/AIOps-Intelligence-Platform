@@ -93,9 +93,9 @@ BEGIN
       JOIN pg_attribute parent ON parent.attrelid = c.confrelid AND parent.attnum = c.confkey[1]
       WHERE c.contype = 'f' AND c.conparentid = 0 AND c.convalidated AND cardinality(c.conkey) = 2
         AND c.connamespace = 'public'::regnamespace
-        AND child.attname = 'tenant_id' AND parent.attname = 'tenant_id') <> 26
+        AND child.attname = 'tenant_id' AND parent.attname = 'tenant_id') <> 29
   THEN
-    RAISE EXCEPTION 'Esperadas 26 FKs operacionais validadas com tenant_id';
+    RAISE EXCEPTION 'Esperadas 29 FKs operacionais validadas com tenant_id';
   END IF;
 END $$;
 ROLLBACK;

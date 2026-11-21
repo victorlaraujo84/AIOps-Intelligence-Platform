@@ -581,6 +581,8 @@ jobs:
           dc up -d --no-build --wait --wait-timeout 120
           dc cp proxy:/data/caddy/pki/authorities/local/root.crt "$RUNNER_TEMP/release-ca.crt"
           NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/release-ca.crt" node tests/integration/postgres-release-smoke.mjs --imported
+          AIOPS_POSTGRES_RELEASE_WRITES=false dc up -d --no-deps --force-recreate --wait web
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/release-ca.crt" node tests/integration/postgres-release-smoke.mjs --imported --read-only
       - name: Limpar volumes de teste
         if: always()
         run: |
