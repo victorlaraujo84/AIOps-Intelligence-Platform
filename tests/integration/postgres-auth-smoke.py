@@ -59,6 +59,55 @@ def check_site_write(operator, operator_b):
     assert all(item["tenant_id"] == TENANT_A for item in final_page["items"])
 
 
+def check_asset_write(operator, operator_b):
+    own_site = "00000000-0000-4000-b000-000000000011"
+    foreign_site = "00000000-0000-4000-b000-000000000013"
+    missing_site = "00000000-0000-4000-b000-000000000099"
+    path = "inventory/assets"
+    payload = {"name": "Ativo Runtime", "hostname": "router-a", "domain": " TI ", "site_id": own_site}
+
+    assert request(path, data={**payload, "operational_state": "UP"}, token=operator)[0] == 422
+    assert request(path, data={**payload, "tenant_id": TENANT_B}, token=operator)[0] == 422
+    foreign = request(path, data={**payload, "site_id": foreign_site}, token=operator)
+    missing = request(path, data={**payload, "site_id": missing_site}, token=operator)
+    assert foreign[:2] == missing[:2] and foreign[0] == 422
+
+    status, asset, headers = request(path, data=payload, token=operator)
+    assert status == 201 and headers["Cache-Control"] == "no-store", (status, asset)
+    assert asset["tenant_id"] == TENANT_A and asset["site_id"] == own_site
+    assert asset["domain"] == "ti" and asset["georeference_mode"] == "required"
+    assert asset["operational_state"] == "NO_DATA"
+    asset_url = f"{path}/{asset['id']}"
+
+    def update(data, token=operator):
+        return request(asset_url, data=data, token=token, method="PATCH")
+
+    assert update({"name": "Outro tenant"}, operator_b)[0] == 404
+    assert update({"site_id": foreign_site}, operator_b)[0] == 404
+    assert update({"site_id": foreign_site})[0] == 422
+    assert update({"site_id": None})[0] == 422
+    assert update({"name": None})[0] == 422
+    status, changed, _ = update({
+        "hostname": None, "site_id": None, "georeference_mode": "none", "criticality": "alta",
+    })
+    assert status == 200 and changed["site_id"] is None and changed["hostname"] is None
+    assert changed["georeference_mode"] == "none" and changed["criticality"] == "alta"
+    assert update({"georeference_mode": "required"})[0] == 422
+
+    status, logical, _ = request(path, data={"name": "Ativo Lógico Runtime"}, token=operator_b)
+    assert status == 201 and logical["site_id"] is None and logical["georeference_mode"] == "none"
+    status, page, _ = request(path, token=operator)
+    assert status == 200 and changed in page["items"]
+    assert all(row["tenant_id"] == TENANT_A for row in page["items"])
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request(path, data=payload, token=viewer)[0] == 403
+    assert update({"name": "Leitor"}, viewer)[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -114,12 +163,13 @@ def main():
         assert status == 200 and [row["code"] for row in global_page["items"]] == expected_codes
 
     check_site_write(operator_token, operator_b_token)
+    check_asset_write(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, gravação de sites e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, gravação de sites e ativos e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":

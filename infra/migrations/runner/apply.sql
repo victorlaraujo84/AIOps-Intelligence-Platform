@@ -25,7 +25,8 @@ WITH known(version, filename, sha256) AS (
     (6, '006_identity_sessions.sql', :'identity_sha'),
     (7, '007_authenticator.sql', :'auth_sha'),
     (8, '008_auth_tenant_selection.sql', :'selection_sha'),
-    (9, '009_site_writer.sql', :'site_writer_sha')
+    (9, '009_site_writer.sql', :'site_writer_sha'),
+    (10, '010_asset_writer.sql', :'asset_writer_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -40,13 +41,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 6), false) AS has_identity,
   COALESCE(bool_or(m.version = 7), false) AS has_auth,
   COALESCE(bool_or(m.version = 8), false) AS has_selection,
-  COALESCE(bool_or(m.version = 9), false) AS has_site_writer
+  COALESCE(bool_or(m.version = 9), false) AS has_site_writer,
+  COALESCE(bool_or(m.version = 10), false) AS has_asset_writer
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_asset_writer
+  \if :has_site_writer
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 010 sem versão 009'; END $$;
+  \endif
 \endif
 
 \if :has_site_writer
@@ -184,6 +193,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../009_site_writer.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (9, '009_site_writer.sql', :'site_writer_sha');
+\endif
+
+\if :has_asset_writer
+\else
+  \ir ../010_asset_writer.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (10, '010_asset_writer.sql', :'asset_writer_sha');
 \endif
 
 COMMIT;

@@ -13,7 +13,7 @@ Resource = Literal["sites", "assets", "services"]
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 COLUMNS = {
     "sites": "id, tenant_id, code, name, municipality, uf, latitude, longitude, coord_verified, criticality",
-    "assets": "id, tenant_id, site_id, name, hostname, domain, georeference_mode, asset_type_code, operational_state",
+    "assets": "id, tenant_id, site_id, name, hostname, domain, georeference_mode, asset_type_code, criticality, operational_state",
     "services": "id, tenant_id, code, name, domain, criticality, owner_team, operational_state",
 }
 

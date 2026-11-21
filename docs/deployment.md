@@ -136,6 +136,18 @@ GRANT aiops_site_writer TO aiops_site_write_runtime WITH SET TRUE;
 
 Configure `AIOPS_POSTGRES_SITE_WRITE_DSN` para essa conta em homologação. O FastAPI usa `POST /api/v1/inventory/sites` para cadastrar código e nome, com município, UF e criticidade opcionais. `PATCH /api/v1/inventory/sites/{id}` permite editar nome, município, UF e criticidade. A sessão fornece o tenant e a identidade do autor. A alteração e o registro de auditoria são gravados na mesma transação. O papel tem permissões específicas sobre sites e sobre a inserção da auditoria correspondente.
 
+### Cadastro e atualização de ativos
+
+A migração 010 adiciona uma conta de escrita de ativos. Provisione uma conta exclusiva no `psql`.
+
+```sql
+CREATE ROLE aiops_asset_write_runtime LOGIN NOINHERIT;
+GRANT aiops_asset_writer TO aiops_asset_write_runtime WITH SET TRUE;
+\password aiops_asset_write_runtime
+```
+
+Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` no perfil `core`. Use `POST /api/v1/inventory/assets` para cadastrar um ativo com nome e, opcionalmente, hostname, domínio, criticidade, modo de georreferenciamento e site. `PATCH /api/v1/inventory/assets/{id}` altera esses campos. O modo `required` exige um site do mesmo tenant. Ativos lógicos podem ser cadastrados sem site e começam com estado `NO_DATA`. Cada gravação inclui auditoria na mesma transação. Para desativar a escrita, remova esse DSN e recrie a API.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

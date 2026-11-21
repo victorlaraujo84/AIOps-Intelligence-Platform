@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from .postgres_asset_write import postgres_asset_write_lifespan, router as postgres_asset_write_router
 from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_router
 from .postgres_inventory import postgres_inventory_lifespan, router as postgres_inventory_router
 from .postgres_site_write import postgres_site_write_lifespan, router as postgres_site_write_router
@@ -14,6 +15,7 @@ async def lifespan(app: FastAPI):
         postgres_auth_lifespan(app),
         postgres_inventory_lifespan(app),
         postgres_site_write_lifespan(app),
+        postgres_asset_write_lifespan(app),
     ):
         yield
 
@@ -28,6 +30,7 @@ app = FastAPI(
 app.include_router(postgres_auth_router)
 app.include_router(postgres_inventory_router)
 app.include_router(postgres_site_write_router)
+app.include_router(postgres_asset_write_router)
 
 
 @app.get("/health")
