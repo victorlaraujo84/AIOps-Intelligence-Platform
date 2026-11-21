@@ -31,6 +31,8 @@ SELECT pg_has_role(current_user, 'aiops_asset_writer', 'SET')
     OR has_any_column_privilege(current_user, 'public.sites', 'SELECT, INSERT, UPDATE, REFERENCES')
     OR has_any_column_privilege(current_user, 'public.assets', 'SELECT, INSERT, UPDATE, REFERENCES')
     OR has_table_privilege(current_user, 'public.assets', 'DELETE, TRUNCATE, TRIGGER')
+    OR has_any_column_privilege(current_user, 'public.asset_categories', 'SELECT, INSERT, UPDATE, REFERENCES')
+    OR has_table_privilege(current_user, 'public.asset_categories', 'DELETE, TRUNCATE, TRIGGER')
     OR has_any_column_privilege(current_user, 'public.topology_edges', 'SELECT, INSERT, UPDATE, REFERENCES')
     OR has_table_privilege(current_user, 'public.topology_edges', 'DELETE, TRUNCATE, TRIGGER')
     OR has_any_column_privilege(current_user, 'public.audit_logs', 'SELECT, INSERT, UPDATE, REFERENCES')
@@ -45,6 +47,7 @@ class CreateAsset(BaseModel):
     name: Name
     hostname: Name | None = None
     site_id: UUID | None = None
+    category_id: UUID | None = None
     domain: Domain = "infra"
     georeference_mode: GeoreferenceMode | None = None
     criticality: Criticality = "media"
@@ -56,6 +59,7 @@ class UpdateAsset(BaseModel):
     name: Name | None = None
     hostname: Name | None = None
     site_id: UUID | None = None
+    category_id: UUID | None = None
     domain: Domain | None = None
     georeference_mode: GeoreferenceMode | None = None
     criticality: Criticality | None = None
@@ -93,6 +97,16 @@ def validate_site(mode: GeoreferenceMode, site_id: UUID | None):
         raise HTTPException(422, "Ativos com georreferenciamento obrigatório exigem um site.", headers=AUTH_HEADERS)
 
 
+async def get_asset_category(connection: asyncpg.Connection, tenant: UUID, category_id: UUID):
+    category = await connection.fetchrow(
+        "SELECT code, domain FROM public.asset_categories WHERE tenant_id = $1 AND id = $2",
+        tenant, category_id,
+    )
+    if category is None:
+        raise HTTPException(422, "Categoria indisponível neste tenant.", headers=AUTH_HEADERS)
+    return category
+
+
 @router.post("", status_code=201)
 async def create_asset(
     body: CreateAsset,
@@ -103,13 +117,21 @@ async def create_asset(
     async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):
         mode = body.georeference_mode or ("required" if body.site_id is not None else "none")
         validate_site(mode, body.site_id)
+        domain, type_code = body.domain, None
+        if body.category_id is not None:
+            category = await get_asset_category(connection, tenant, body.category_id)
+            type_code = category["code"]
+            if "domain" not in body.model_fields_set:
+                domain = category["domain"]
         asset = await connection.fetchrow(
             f"""
-            INSERT INTO public.assets (tenant_id, name, hostname, site_id, domain, georeference_mode, criticality)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO public.assets (
+                tenant_id, name, hostname, site_id, domain, georeference_mode, criticality, category_id, asset_type_code
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING {ASSET_FIELDS}
             """,
-            tenant, body.name, body.hostname, body.site_id, body.domain, mode, body.criticality,
+            tenant, body.name, body.hostname, body.site_id, domain, mode, body.criticality, body.category_id, type_code,
         )
         await audit_inventory_write(connection, tenant, identity, "ASSET_CREATED", "asset", asset["id"])
     response.headers.update(AUTH_HEADERS)
@@ -129,20 +151,32 @@ async def update_asset(
     if not changes or any(field in changes and changes[field] is None for field in required_fields):
         raise HTTPException(422, "Informe campos válidos para atualizar o ativo.", headers=AUTH_HEADERS)
 
-    # Os nomes das colunas vêm dos campos declarados em UpdateAsset.
-    assignments = ", ".join(f"{field} = ${index}" for index, field in enumerate(changes, 3))
     async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):
-        if "site_id" in changes or "georeference_mode" in changes:
+        updates_site = "site_id" in changes or "georeference_mode" in changes
+        if updates_site or "category_id" in changes:
             current = await connection.fetchrow(
                 """
-                SELECT site_id, georeference_mode FROM public.assets
+                SELECT site_id, georeference_mode, category_id FROM public.assets
                 WHERE id = $1 AND tenant_id = $2 FOR UPDATE
                 """,
                 asset_id, tenant,
             )
             if current is None:
                 raise HTTPException(404, "Ativo não encontrado.", headers=AUTH_HEADERS)
-            validate_site(changes.get("georeference_mode", current["georeference_mode"]), changes.get("site_id", current["site_id"]))
+            if updates_site:
+                validate_site(
+                    changes.get("georeference_mode", current["georeference_mode"]),
+                    changes.get("site_id", current["site_id"]),
+                )
+        if "category_id" in changes and changes["category_id"] is not None:
+            category = await get_asset_category(connection, tenant, changes["category_id"])
+            changes["asset_type_code"] = category["code"]
+            changes.setdefault("domain", category["domain"])
+        elif "category_id" in changes and current["category_id"] is not None:
+            changes["asset_type_code"] = None
+
+        # Os nomes vêm de UpdateAsset e da coluna derivada asset_type_code.
+        assignments = ", ".join(f"{field} = ${index}" for index, field in enumerate(changes, 3))
         asset = await connection.fetchrow(
             f"""
             UPDATE public.assets SET {assignments}, updated_at_utc = now()

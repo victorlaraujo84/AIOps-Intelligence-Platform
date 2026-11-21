@@ -303,6 +303,67 @@ def check_topology(operator, operator_b):
     assert statuses == [201, 409], statuses
 
 
+def check_asset_categories(operator, operator_b):
+    catalog = "inventory/asset-categories"
+    assets = "inventory/assets"
+    payload = {"code": " Link Óptico ", "label": "Enlace óptico", "domain": " Rede "}
+    assert request(catalog)[0] == 401
+    assert request(catalog, data={**payload, "tenant_id": TENANT_B}, token=operator)[0] == 422
+
+    status, category, headers = request(catalog, data=payload, token=operator)
+    assert status == 201 and headers["Cache-Control"] == "no-store", (status, category)
+    assert category["code"] == "link__ptico" and category["domain"] == "rede"
+    assert category["tenant_id"] == TENANT_A
+    assert request(catalog, data={**payload, "code": "link__ptico"}, token=operator)[0] == 409
+    status, foreign, _ = request(catalog, data=payload, token=operator_b)
+    assert status == 201 and foreign["tenant_id"] == TENANT_B
+    status, alternate, _ = request(catalog, data={"code": "sensor", "label": "Sensor", "domain": "iot"}, token=operator)
+    assert status == 201
+
+    status, first, _ = request(f"{catalog}?limit=1", token=operator)
+    assert status == 200 and first["next_after"] and len(first["items"]) == 1
+    status, second, _ = request(f"{catalog}?limit=1&after={first['next_after']}", token=operator)
+    assert status == 200 and second["next_after"] is None and len(second["items"]) == 1
+    assert {row["id"] for row in first["items"] + second["items"]} == {category["id"], alternate["id"]}
+    status, page_b, _ = request(catalog, token=operator_b)
+    assert status == 200 and page_b["items"] == [foreign]
+
+    assignment = {"name": "Ativo categorizado", "category_id": category["id"]}
+    assert request(assets, data={**assignment, "category_id": foreign["id"]}, token=operator)[0] == 422
+    status, asset, _ = request(assets, data=assignment, token=operator)
+    assert status == 201 and asset["category_id"] == category["id"]
+    assert asset["asset_type_code"] == category["code"] and asset["domain"] == "rede"
+    url = f"{assets}/{asset['id']}"
+
+    def update(data, token=operator):
+        return request(url, data=data, token=token, method="PATCH")
+
+    assert update({"category_id": foreign["id"]})[0] == 422
+    assert update({"category_id": foreign["id"]}, token=operator_b)[0] == 404
+    status, updated, _ = update({"category_id": alternate["id"], "domain": "energia"})
+    assert status == 200 and updated["category_id"] == alternate["id"]
+    assert updated["asset_type_code"] == "sensor" and updated["domain"] == "energia"
+    status, retained, _ = update({"hostname": "sensor-01"})
+    assert status == 200 and retained["category_id"] == alternate["id"] and retained["asset_type_code"] == "sensor"
+    status, detached, _ = update({"category_id": None})
+    assert status == 200 and detached["category_id"] is None and detached["asset_type_code"] is None
+    assert detached["domain"] == "energia"
+
+    status, existing, _ = request(assets, token=operator)
+    assert status == 200
+    legacy = next(row for row in existing["items"] if row["name"] == "Ativo A")
+    status, legacy, _ = request(f"{assets}/{legacy['id']}", data={"category_id": None}, token=operator, method="PATCH")
+    assert status == 200 and legacy["category_id"] is None and legacy["asset_type_code"] == "tipo_legado"
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request(catalog, token=viewer)[0] == 200
+    assert request(catalog, data=payload, token=viewer)[0] == 403
+    assert update({"category_id": category["id"]}, token=viewer)[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -362,12 +423,13 @@ def main():
     check_service_write(operator_token, operator_b_token)
     check_service_dependencies(operator_token, operator_b_token)
     check_topology(operator_token, operator_b_token)
+    check_asset_categories(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, gravação de inventário, dependências e topologia, e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, inventário, catálogo, dependências, topologia e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":

@@ -27,8 +27,8 @@ INSERT INTO sites (id, tenant_id, code, name) VALUES
   ('00000000-0000-4000-b000-000000000011', '${active}', 'a-1', 'Site A1'),
   ('00000000-0000-4000-b000-000000000012', '${active}', 'a-2', 'Site A2'),
   ('00000000-0000-4000-b000-000000000013', '${second}', 'b-1', 'Site B1');
-INSERT INTO assets (tenant_id, name, domain, georeference_mode) VALUES
-  ('${active}', 'Ativo A', 'ti', 'none'), ('${second}', 'Ativo B', 'ti', 'none');
+INSERT INTO assets (tenant_id, name, domain, georeference_mode, asset_type_code) VALUES
+  ('${active}', 'Ativo A', 'ti', 'none', 'tipo_legado'), ('${second}', 'Ativo B', 'ti', 'none', NULL);
 INSERT INTO services (tenant_id, code, name) VALUES
   ('${active}', 'service-a', 'Serviço A'), ('${second}', 'service-b', 'Serviço B');
 INSERT INTO users (tenant_id, email, full_name, role, password_hash, is_active) VALUES
