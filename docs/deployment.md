@@ -382,7 +382,7 @@ As telas de conectores, eventos, incidentes, métricas, logs e anomalias apresen
 
 ### Worker de chamados ITSM
 
-A migração 029 habilita as funções de abertura e acompanhamento de chamados. Inclua `compose.postgres-itsm.yaml` e o perfil `itsm` somente nos ambientes que operarão o worker. Configure `AIOPS_ITSM_WORKER_IMAGE` com a mesma tag do Web e da API. O worker usa a rede interna para o PostgreSQL e uma rede de saída para o destino HTTPS.
+A migração 029 habilita as funções de abertura e acompanhamento de chamados. Inclua `compose.postgres-itsm.yaml` e o perfil `itsm` somente nos ambientes que operarão o worker. Configure `AIOPS_ITSM_WORKER_IMAGE` com a imagem do pacote Web e o prefixo `itsm-worker-` antes da versão. Se o Web usar `rc-123456789abc`, o worker usa `itsm-worker-rc-123456789abc` no mesmo pacote. O worker usa a rede interna para o PostgreSQL e uma rede de saída para o destino HTTPS.
 
 Provisione uma conta PostgreSQL dedicada com `LOGIN` e sem privilégios administrativos. Conceda o papel `aiops_itsm_worker` com herança e configure a senha interativamente com `\password` no `psql`. Ponha o DSN em `AIOPS_ITSM_DB_DSN` no arquivo privado do Compose. O worker confere as permissões ao iniciar.
 
