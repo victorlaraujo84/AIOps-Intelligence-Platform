@@ -729,6 +729,70 @@ if (process.argv.includes('--site-delete')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--asset-delete')) {
+  const admin = client();
+  const other = client();
+  const viewer = client();
+  const operator = client();
+  const global = client();
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, name, password = name) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const list = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return (await response.json()).items;
+  };
+  assert.equal((await login(admin, 'admin')).status, 204);
+  assert.equal((await login(other, 'admin-b', 'admin')).status, 204);
+  assert.equal((await login(operator, 'operator')).status, 204);
+  assert.equal((await login(viewer, 'viewer')).status, 204);
+  assert.equal((await login(global, 'global')).status, 204);
+
+  const assets = '/inventory/assets';
+  const own = await list(viewer, assets);
+  const asset = own.find(row => row.name === 'Ativo para excluir CI');
+  const child = own.find(row => row.name === 'Ativo filho a preservar CI');
+  const foreign = (await list(other, assets)).find(row => row.name === 'Ativo B');
+  const service = (await list(viewer, '/inventory/services')).find(row => row.code === 'ASSET_DELETE_LINK');
+  assert.ok(asset && child && foreign && service, 'Carregue as fixtures de exclusão de ativos antes deste teste.');
+
+  const edges = '/inventory/topology/edges';
+  const dependencies = '/inventory/services/' + service.id + '/dependencies';
+  const fixtureEdges = (await list(viewer, edges)).filter(row => row.link_type === 'asset-delete-ci');
+  assert.equal(fixtureEdges.length, 3);
+  const before = await list(viewer, dependencies);
+  assert.deepEqual(before.map(row => row.asset_id).sort(), [asset.id, child.id].sort());
+  const target = assets + '/' + asset.id;
+  const remove = (session, headers) => session(target, { method: 'DELETE', data: {}, headers });
+  assert.equal((await remove(client(), scope(tenantA))).status, 401);
+  assert.equal((await remove(admin)).status, 422);
+  assert.equal((await remove(admin, { ...scope(tenantA), 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await remove(operator, scope(tenantA))).status, 403);
+  assert.equal((await remove(viewer, scope(tenantA))).status, 403);
+  assert.equal((await remove(other, scope(tenantB))).status, 404);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(global, scope(tenantA))).status, 409);
+
+  const results = await Promise.all([remove(admin, scope(tenantA)), remove(admin, scope(tenantA))]);
+  assert.deepEqual(results.map(response => response.status).sort(), [204, 404]);
+  assert.equal(await results.find(response => response.status === 204).text(), '');
+  const after = await list(viewer, assets);
+  assert.ok(!after.some(row => row.id === asset.id));
+  assert.deepEqual(after.find(row => row.id === child.id), child);
+  assert.deepEqual((await list(viewer, edges)).filter(row => row.link_type === 'asset-delete-ci'),
+    fixtureEdges.filter(row => row.source_asset_id !== asset.id && row.target_asset_id !== asset.id));
+  assert.deepEqual(await list(viewer, dependencies), before.filter(row => row.asset_id !== asset.id));
+  assert.deepEqual((await list(other, assets)).find(row => row.id === foreign.id), foreign);
+
+  for (const session of [admin, other, operator, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Exclusão de ativo, enlaces e dependências seletivos, papéis e isolamento verificados por HTTPS.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -772,6 +836,9 @@ assert.equal((await operator('/inventory/topology/edges')).status, 200);
 assert.equal((await operator('/inventory/topology/edges', { data: {} })).status, 404);
 assert.equal((await operator('/inventory/sites', { data: { name: 'fixture', code: 'fixture' } })).status, 404);
 assert.equal((await operator('/inventory/sites/' + tenantA, {
+  method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
+})).status, 404);
+assert.equal((await operator('/inventory/assets/' + tenantA, {
   method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
 })).status, 404);
 assert.equal((await operator('/logout', { data: {} })).status, 204);
