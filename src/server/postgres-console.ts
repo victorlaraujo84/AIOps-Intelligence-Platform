@@ -67,6 +67,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const router = Router();
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
+  const incidentWrites = pilotOnly && process.env.AIOPS_POSTGRES_INCIDENT_WRITES === 'true';
   const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
   const tenantCreation = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_CREATE_TENANTS === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
@@ -87,7 +88,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
 
   router.get('/status', (_req, res) => {
     res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites,
-      user_admin: userAdmin, tenant_creation: tenantCreation });
+      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites });
   });
 
   router.post('/login', async (req, res) => {
@@ -190,6 +191,25 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   }
   router.get('/inventory/audit', scopedFeed);
   router.get('/inventory/feed/:feed', scopedFeed);
+
+  async function incident(req: Request, res: Response) {
+    const token = authenticated(req, res);
+    if (!token) return;
+    const expected = req.get('X-AIOps-Expected-Tenant');
+    const id = req.params.id;
+    if (!expected || !UUID_PATTERN.test(expected) || !UUID_PATTERN.test(id)) {
+      res.status(422).json({ error: 'Identificador de incidente ou tenant inválido.' });
+      return;
+    }
+    const path = '/inventory/incidents/' + id;
+    if (req.method === 'PATCH') {
+      forward(res, await callCore(path + '/rca-review', token, req.body ?? {}, expected, 'PATCH'));
+    } else {
+      forward(res, await callCore(path + queryFor(req, ['after', 'limit']), token, undefined, expected));
+    }
+  }
+  router.get('/inventory/incidents/:id', incident);
+  if (incidentWrites) router.patch('/inventory/incidents/:id/rca-review', incident);
 
   router.get('/inventory/sites/map', async (req, res) => {
     const token = authenticated(req, res);

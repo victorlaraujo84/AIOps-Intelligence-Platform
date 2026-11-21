@@ -2,19 +2,20 @@ import assert from 'node:assert/strict';
 
 const base = process.env.AIOPS_POSTGRES_CONSOLE_TEST_ORIGIN ?? 'https://localhost';
 const imported = process.argv.includes('--imported');
+const readOnly = process.argv.includes('--read-only');
 const credentials = imported
   ? { email: 'admin@example.invalid', password: 'admin-fixture-only' }
   : { email: 'release-admin@example.invalid', password: 'release-bootstrap-fixture-only' };
 let cookie;
 let tenant;
 
-async function request(path, status, data) {
+async function request(path, status, data, method = data === undefined ? 'GET' : 'POST') {
   const headers = new Headers();
   if (cookie) headers.set('Cookie', cookie);
   if (tenant) headers.set('X-AIOps-Expected-Tenant', tenant);
   if (data !== undefined) headers.set('Content-Type', 'application/json');
   const response = await fetch(base + path, {
-    headers, method: data === undefined ? 'GET' : 'POST', body: data === undefined ? undefined : JSON.stringify(data),
+    headers, method, body: data === undefined ? undefined : JSON.stringify(data),
   });
   assert.equal(response.status, status, path);
   if (response.headers.has('set-cookie')) cookie = response.headers.get('set-cookie').split(';', 1)[0];
@@ -28,8 +29,8 @@ await request('/api/auth/status', 404);
 await request(root + '/login', 204, credentials);
 if (imported) {
   const { items } = await request(root + '/tenants', 200);
-  assert.equal(items.length, 1);
-  tenant = items[0].id;
+  tenant = items.find(row => row.slug === 'inventory-fixture')?.id;
+  assert.ok(tenant);
   await request(root + '/switch-tenant', 200, { tenant_id: tenant });
   const audit = await request(root + '/inventory/audit', 200);
   assert.ok(audit.items.some(row => row.action === 'AUDIT_IMPORTED' && row.resource_id === 'legacy/site'));
@@ -40,16 +41,62 @@ if (imported) {
   const events = await request(root + '/inventory/feed/events', 200);
   assert.deepEqual(events.items.map(row => row.source), ['fixture']);
   const incidents = await request(root + '/inventory/feed/incidents', 200);
-  assert.deepEqual(incidents.items.map(row => row.status), ['OPEN']);
+  assert.deepEqual(incidents.items.map(row => row.status), [readOnly ? 'RESOLVED' : 'OPEN']);
+  const incidentId = incidents.items[0].id;
+  const incidentPath = root + '/inventory/incidents/' + incidentId;
+  const reviewPath = incidentPath + '/rca-review';
+  const detail = await request(incidentPath, 200);
+  assert.deepEqual(detail.events.map(event => event.id), events.items.map(event => event.id));
+  assert.equal(detail.events[0].role_in_incident, 'symptom');
+  assert.equal(detail.incident.rca_evidence[0].evidence, detail.incident.title);
   const metrics = await request(root + '/inventory/feed/metrics', 200);
   assert.deepEqual(metrics.items.map(row => row.value_num), [1]);
-  if (process.argv.includes('--read-only')) {
+  if (readOnly) {
     const flags = await request(root + '/status', 200);
-    assert.deepEqual([flags.site_writes, flags.asset_writes, flags.service_writes, flags.user_admin, flags.tenant_creation],
-      [false, false, false, false, false]);
+    assert.deepEqual([flags.site_writes, flags.asset_writes, flags.service_writes, flags.user_admin, flags.tenant_creation, flags.incident_writes],
+      [false, false, false, false, false, false]);
     await request(root + '/inventory/sites', 404, { code: 'BLOCKED', name: 'Bloqueado' });
+    await request(reviewPath, 404, { expected_review: detail.incident.human_reviewed_at_utc, status: 'OPEN' }, 'PATCH');
+    assert.ok(detail.incident.resolved_at_utc);
+  } else {
+    const fixtureTenant = tenant;
+    const initial = { expected_review: null, status: 'ACKNOWLEDGED' };
+    const viewer = { email: 'release-viewer@example.invalid', password: 'viewer-fixture-only' };
+    await request(root + '/tenant-users', 201, { ...viewer, full_name: 'Viewer fixture', role: 'tenant_viewer' });
+    const other = await request(root + '/tenants', 201, { name: 'Release isolated' });
+    await request(root + '/switch-tenant', 200, { tenant_id: other.id });
+    await request(incidentPath, 409);
+    await request(reviewPath, 409, initial, 'PATCH');
+    tenant = other.id;
+    await request(incidentPath, 404);
+    await request(reviewPath, 404, initial, 'PATCH');
+    await request(root + '/logout', 204, {});
+    tenant = fixtureTenant;
+    await request(root + '/login', 204, viewer);
+    await request(incidentPath, 200);
+    await request(reviewPath, 403, initial, 'PATCH');
+    await request(root + '/logout', 204, {});
+    await request(root + '/login', 204, credentials);
+    await request(root + '/switch-tenant', 200, { tenant_id: tenant });
+    const operator = { email: 'release-operator@example.invalid', password: 'operator-fixture-only' };
+    await request(root + '/tenant-users', 201, { ...operator, full_name: 'Operator fixture', role: 'tenant_operator' });
+    await request(root + '/logout', 204, {});
+    await request(root + '/login', 204, operator);
+    await request(reviewPath, 422, { ...initial, status: 'UNKNOWN' }, 'PATCH');
+    await request(reviewPath, 422, { expected_review: null }, 'PATCH');
+    const reviewed = await request(reviewPath, 200, { ...initial, rca_category: 'ti_aplicacao', review_note: 'Nota fixture' }, 'PATCH');
+    assert.equal(reviewed.status, 'ACKNOWLEDGED');
+    await request(reviewPath, 409, initial, 'PATCH');
+    await request(reviewPath, 200, { expected_review: reviewed.human_reviewed_at_utc, status: 'RESOLVED' }, 'PATCH');
+    const { incident: resolved } = await request(incidentPath, 200);
+    assert.ok(resolved.resolved_at_utc);
+    assert.equal(resolved.rca_category, 'ti_aplicacao');
+    assert.equal(resolved.rca_evidence[1].note, 'Nota fixture');
+    assert.equal(resolved.rca_evidence.length, 2);
+    const updatedAudit = await request(root + '/inventory/audit', 200);
+    assert.equal(updatedAudit.items.filter(row => row.action === 'INCIDENT_RCA_REVIEWED'
+      && row.resource_id === incidentId && row.actor_role === 'tenant_operator').length, 2);
   }
-
 
 } else if (process.argv.includes('--verify-restart')) {
   const { items } = await request(root + '/tenants', 200);
