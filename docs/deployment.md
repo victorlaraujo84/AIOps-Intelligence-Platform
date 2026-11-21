@@ -67,19 +67,34 @@ Ao atualizar um banco com dados, a migração valida os vínculos já cadastrado
 
 A migração 005 aceita a taxonomia extensível do SQLite. Ao excluir um site, o PostgreSQL preserva o ativo e limpa o vínculo, conforme o comportamento do console.
 
-Use um backup consistente, sem WAL pendente, e um projeto Compose dedicado com `POSTGRES_DB=aiops_inventory_rehearsal`. Suba apenas os serviços necessários do perfil `core` e aplique as migrações. Execute o ensaio no diretório desse projeto e mantenha o `.env` e o backup com permissões restritas.
+Crie o snapshot pelo contêiner Web e guarde-o em um diretório privado. O comando usa o backup online do SQLite e confere a integridade da cópia.
+
+```bash
+umask 077
+backup_dir=$(mktemp -d)
+docker compose exec -T web node scripts/backup-web-sqlite.mjs > "$backup_dir/aiops.db"
+```
+
+Para testar a restauração, passe a cópia a um contêiner sem rede. O teste inicia o Web com um SQLite temporário e confere o status de saúde e a inicialização já realizada. Use um arquivo de ambiente de teste com as chaves exigidas pelo Web.
+
+```bash
+image=$(docker compose images -q web)
+docker run --rm -i --network none --env-file /caminho/privado/teste.env \
+  -e NODE_ENV=production --entrypoint sh "$image" \
+  scripts/check-sqlite-restore.sh < "$backup_dir/aiops.db"
+```
+
+Para o ensaio de migração, use um projeto Compose dedicado com `POSTGRES_DB=aiops_inventory_rehearsal`. Execute a partir do checkout do ensaio e mantenha o `.env` e o backup com permissões restritas.
 
 ```bash
 export POSTGRES_DB=aiops_inventory_rehearsal
-docker compose -p aiops-inventory-rehearsal --profile core up -d --wait --build api
-set -o pipefail
-python3 scripts/rehearse-inventory-migration.py /caminho/privado/snapshot.db |
-  docker compose -p aiops-inventory-rehearsal --profile core exec -T postgres sh -ec '
-    exec psql -Xq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
-  '
+docker compose -p aiops-inventory-rehearsal --profile core up -d --wait postgres
+docker compose -p aiops-inventory-rehearsal --profile core run --rm postgres-migrate
+python3 scripts/rehearse-inventory-migration.py "$backup_dir/aiops.db" \
+  --inventory-project aiops-inventory-rehearsal
 ```
 
-O ensaio compara as contagens de tenants, concessões, tipos de localidade, categorias, sites, ativos, serviços, dependências e topologia. A importação exige UUIDs válidos, referências dentro do tenant e PostgreSQL migrado até a versão 005. O PostGIS recebe geometria apenas para coordenadas verificadas. O script termina com `ROLLBACK`, inclusive quando as contagens coincidem. Usuários, sessões, credenciais, incidentes e telemetria têm contratos de migração próprios.
+O ensaio compara contagens e campos normalizados de tenants, concessões, tipos de localidade, categorias, sites, ativos, serviços, dependências e topologia. Valida as referências por tenant e a geometria WGS 84 dos sites verificados. O modo protegido imprime apenas as contagens e termina com `ROLLBACK`. Os modos de inventário e identidade são configurados separadamente.
 
 ### Identidades e sessões no PostgreSQL
 

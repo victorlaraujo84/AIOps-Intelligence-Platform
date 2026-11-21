@@ -85,10 +85,8 @@ jobs:
           snapshot="$RUNNER_TEMP/inventory-fixture.db"
           docker compose exec -T web node --import tsx --input-type=module - \
             < tests/integration/inventory-rehearsal-fixture.mjs > "$snapshot"
-          python3 scripts/rehearse-inventory-migration.py "$snapshot" | \
-            docker compose --profile core exec -T postgres sh -ec '
-              exec psql -XqAt -F "|" -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -f -
-            ' > "$RUNNER_TEMP/inventory-counts.txt"
+          python3 scripts/rehearse-inventory-migration.py "$snapshot" --inventory-project "$COMPOSE_PROJECT_NAME" \
+            > "$RUNNER_TEMP/inventory-counts.txt"
           awk -F '|' 'NF == 3 && $2 > 0 && $2 == $3 { matched++ } END { exit matched != 9 }' \
             "$RUNNER_TEMP/inventory-counts.txt"
           python3 scripts/rehearse-inventory-migration.py "$snapshot" --identity-project "$COMPOSE_PROJECT_NAME" \
@@ -98,6 +96,24 @@ jobs:
           test "$(awk -F '|' '$1 == "users" { print $2 }' "$RUNNER_TEMP/identity-counts.txt")" = 2
           docker compose --profile core exec -T postgres sh -ec '
             rows=$(psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -c "SELECT (SELECT count(*) FROM tenants) + (SELECT count(*) FROM users) + (SELECT count(*) FROM sessions)")
+            test "$rows" = 0
+          '
+          docker compose --profile core exec -T postgres sh -ec '
+            exec psql -Xq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -f -
+          ' <<'SQL'
+          CREATE FUNCTION public.fixture_alter_site() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            NEW.name := 'Divergência sintética';
+            RETURN NEW;
+          END $$;
+          CREATE TRIGGER fixture_alter_site BEFORE INSERT ON public.sites
+          FOR EACH ROW EXECUTE FUNCTION public.fixture_alter_site();
+          SQL
+          if python3 scripts/rehearse-inventory-migration.py "$snapshot" --inventory-project "$COMPOSE_PROJECT_NAME"; then
+            exit 1
+          fi
+          docker compose --profile core exec -T postgres sh -ec '
+            rows=$(psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -c "SELECT (SELECT count(*) FROM tenants) + (SELECT count(*) FROM sites)")
             test "$rows" = 0
           '
       - name: Validar HTTPS, bootstrap e sessão após reinício
@@ -115,6 +131,15 @@ jobs:
           docker compose --profile core up -d --wait --wait-timeout 120
           curl --fail --silent --show-error --retry 5 --cacert "$ca" --cookie "$cookies" \
             https://localhost/api/auth/me | jq -e '.user.role == "super_admin" and .user.active_tenant_id != null'
+      - name: Restaurar um backup online do console em contêiner isolado
+        run: |
+          umask 077
+          snapshot="$RUNNER_TEMP/console-online.db"
+          trap 'rm -f "$snapshot"' EXIT
+          docker compose exec -T web node scripts/backup-web-sqlite.mjs > "$snapshot"
+          image=$(docker compose images -q web)
+          docker run --rm -i --network none --env-file .env -e NODE_ENV=production \
+            --entrypoint sh "$image" scripts/check-sqlite-restore.sh < "$snapshot"
       - name: Validar autenticação, inventário e auditoria PostgreSQL no FastAPI
         shell: bash
         run: |
