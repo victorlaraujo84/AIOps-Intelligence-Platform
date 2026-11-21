@@ -5,17 +5,16 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, ConfigDict
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import COLUMNS, inventory_role_pool
-from .postgres_inventory_write import Criticality, Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Criticality, Domain, Name, audit_inventory_write, inventory_write_transaction
 
 
 router = APIRouter(prefix="/api/v1/inventory/assets", tags=["inventory"])
 ASSET_FIELDS = COLUMNS["assets"]
 GeoreferenceMode = Literal["required", "optional", "none"]
-Domain = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1, max_length=80)]
 
 CHECK_WRITER_ROLE = """
 SELECT pg_has_role(current_user, 'aiops_asset_writer', 'SET')

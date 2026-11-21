@@ -148,6 +148,18 @@ GRANT aiops_asset_writer TO aiops_asset_write_runtime WITH SET TRUE;
 
 Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` no perfil `core`. Use `POST /api/v1/inventory/assets` para cadastrar um ativo com nome e, opcionalmente, hostname, domínio, criticidade, modo de georreferenciamento e site. `PATCH /api/v1/inventory/assets/{id}` altera esses campos. O modo `required` exige um site do mesmo tenant. Ativos lógicos podem ser cadastrados sem site e começam com estado `NO_DATA`. Cada gravação inclui auditoria na mesma transação. Para desativar a escrita, remova esse DSN e recrie a API.
 
+### Cadastro e atualização de serviços
+
+A migração 011 adiciona o papel de escrita de serviços. Provisione uma conta exclusiva no `psql`.
+
+```sql
+CREATE ROLE aiops_service_write_runtime LOGIN NOINHERIT;
+GRANT aiops_service_writer TO aiops_service_write_runtime WITH SET TRUE;
+\password aiops_service_write_runtime
+```
+
+Configure `AIOPS_POSTGRES_SERVICE_WRITE_DSN` no perfil `core`. Use `POST /api/v1/inventory/services` para cadastrar código e nome. Domínio, criticidade, equipe responsável, meta de SLA e descrição são opcionais. `PATCH /api/v1/inventory/services/{id}` permite editar os dados cadastrais. O código identifica o serviço dentro do tenant e permanece fixo. A meta de SLA aceita valores de 0 a 100 pontos percentuais. O estado operacional inicial é `NO_DATA`. Cada alteração registra auditoria na mesma transação. Para desativar a escrita, remova esse DSN e recrie a API.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
