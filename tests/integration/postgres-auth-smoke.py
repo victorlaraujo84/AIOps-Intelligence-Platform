@@ -231,6 +231,78 @@ def check_service_dependencies(operator, operator_b):
     assert statuses == [201, 409], statuses
 
 
+def check_topology(operator, operator_b):
+    root = "inventory/topology"
+    edges = f"{root}/edges"
+    upstream = f"{root}/shared-upstream"
+    status, assets, _ = request("inventory/assets", token=operator)
+    assert status == 200
+    by_name = {row["name"]: row["id"] for row in assets["items"]}
+    first, second = by_name["Ativo A"], by_name["Ativo Runtime"]
+    status, created, _ = request("inventory/assets", data={"name": "Topologia A3"}, token=operator)
+    assert status == 201
+    third = created["id"]
+    status, assets, _ = request("inventory/assets", token=operator_b)
+    assert status == 200
+    foreign = next(row["id"] for row in assets["items"] if row["name"] == "Ativo B")
+
+    def link(source, target, *, token=operator, **fields):
+        data = {"source_asset_id": source, "target_asset_id": target, "link_type": "fiber", **fields}
+        return request(edges, data=data, token=token)
+
+    assert link(first, first)[0] == 409
+    assert link(first, foreign)[0] == link(foreign, first)[0] == 422
+    assert link(first, second, capacity_mbps=-0.1)[0] == 422
+    assert link(first, second, capacity_mbps=float("inf"))[0] == 422
+    assert link(first, second, tenant_id=TENANT_B)[0] == 422
+    assert link(first, second, link_type=" ")[0] == 422
+    status, primary, _ = link(first, second, capacity_mbps=1000, provider_name="Operadora", is_redundant=True)
+    assert status == 201 and primary["capacity_mbps"] == 1000 and primary["is_redundant"] is True, (status, primary)
+    assert link(first, second)[0] == 409
+    assert link(first, second, link_type="wireless")[0] == 201
+    assert request(upstream, token=operator)[:2] == (200, {"items": [], "next_after": None})
+
+    status, path, _ = link(second, third)
+    assert status == 201
+    assert link(third, first)[0] == 409
+    assert link(first, third, capacity_mbps=0)[0] == 201
+    status, summary, headers = request(upstream, token=operator)
+    assert status == 200 and headers["Cache-Control"] == "no-store"
+    assert summary == {"items": [{"upstream_asset_id": first, "downstream_count": 2}], "next_after": None}
+    assert request(upstream, token=operator_b)[:2] == (200, {"items": [], "next_after": None})
+
+    status, page, _ = request(f"{edges}?limit=2", token=operator)
+    assert status == 200 and len(page["items"]) == 2 and page["next_after"]
+    status, next_page, _ = request(f"{edges}?limit=2&after={page['next_after']}", token=operator)
+    assert status == 200 and len(next_page["items"]) == 2 and next_page["next_after"] is None
+    by_id = {row["id"]: row for row in page["items"] + next_page["items"]}
+    assert by_id[primary["id"]]["source_asset_name"] == "Ativo A"
+    assert by_id[primary["id"]]["target_asset_name"] == "Ativo Runtime"
+    assert request(edges, token=operator_b)[:2] == (200, {"items": [], "next_after": None})
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    path_url = f"{edges}/{path['id']}"
+    assert request(edges, token=viewer)[0] == 200
+    assert link(first, second, token=viewer)[0] == 403
+    assert request(path_url, token=viewer, method="DELETE")[0] == 403
+    assert request(path_url, token=operator_b, method="DELETE")[0] == 404
+    assert request(path_url, token=operator, method="DELETE")[0] == 204
+    assert request(path_url, token=operator, method="DELETE")[0] == 404
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+    barrier = Barrier(2)
+
+    def concurrent_link(pair):
+        barrier.wait(timeout=5)
+        return link(*pair)[0]
+
+    with ThreadPoolExecutor(2) as workers:
+        statuses = sorted(workers.map(concurrent_link, [(second, third), (third, second)]))
+    assert statuses == [201, 409], statuses
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -289,12 +361,13 @@ def main():
     check_asset_write(operator_token, operator_b_token)
     check_service_write(operator_token, operator_b_token)
     check_service_dependencies(operator_token, operator_b_token)
+    check_topology(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, gravação de inventário e dependências, e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, gravação de inventário, dependências e topologia, e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":
