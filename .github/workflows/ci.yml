@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -144,14 +144,20 @@ jobs:
           LEFT JOIN locality_types l ON a.resource_type = 'locality_type' AND l.id::text = a.resource_id AND l.tenant_id = a.tenant_id
           JOIN users u ON u.id = a.actor_user_id AND u.tenant_id = a.tenant_id
           WHERE a.actor_role = 'tenant_operator'
-            AND (s.code IN ('RUNTIME-SITE', 'GEO-SITE') OR t.name IN ('Ativo Runtime', 'Ativo Lógico Runtime')
+            AND (s.code IN ('RUNTIME-SITE', 'GEO-SITE', 'MAP-SITE') OR t.name IN ('Ativo Runtime', 'Ativo Lógico Runtime')
                  OR v.code = 'RUNTIME_SERVICE' OR c.code IN ('link__ptico', 'sensor')
                  OR k.code = 'REGIONAL' OR l.code = 'PONTO_REMOTO' OR a.resource_type IN ('service_dependency', 'topology_edge'))
+            AND (a.action <> 'SITE_COORDS_VERIFIED'
+                 OR (s.coord_verified
+                     AND ST_SRID(s.geom::geometry) = 4326
+                     AND ST_X(s.geom::geometry) = s.longitude
+                     AND ST_Y(s.geom::geometry) = s.latitude
+                     AND a.details_json = jsonb_build_object('latitude', s.latitude, 'longitude', s.longitude)))
           GROUP BY a.action
           ORDER BY a.action;
           SQL
           )
-          test "$audit_counts" = $'ASSET_CATEGORY_CREATED|3\nASSET_CREATED|2\nASSET_UPDATED|1\nCONCESSION_CREATED|2\nLOCALITY_TYPE_CREATED|2\nSERVICE_CREATED|2\nSERVICE_DEPENDENCY_CREATED|4\nSERVICE_DEPENDENCY_DELETED|2\nSERVICE_UPDATED|1\nSITE_CREATED|3\nSITE_UPDATED|2\nTOPOLOGY_EDGE_CREATED|5\nTOPOLOGY_EDGE_DELETED|1'
+          test "$audit_counts" = $'ASSET_CATEGORY_CREATED|3\nASSET_CREATED|2\nASSET_UPDATED|1\nCONCESSION_CREATED|2\nLOCALITY_TYPE_CREATED|2\nSERVICE_CREATED|2\nSERVICE_DEPENDENCY_CREATED|4\nSERVICE_DEPENDENCY_DELETED|2\nSERVICE_UPDATED|1\nSITE_COORDS_VERIFIED|1\nSITE_CREATED|4\nSITE_UPDATED|3\nTOPOLOGY_EDGE_CREATED|5\nTOPOLOGY_EDGE_DELETED|1'
       - name: Estado do ambiente em caso de falha
         if: failure()
         run: |
