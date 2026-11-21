@@ -33,7 +33,8 @@ WITH known(version, filename, sha256) AS (
     (14, '014_asset_categories.sql', :'asset_categories_sha'),
     (15, '015_site_catalog.sql', :'site_catalog_sha'),
     (16, '016_site_location.sql', :'site_location_sha'),
-    (17, '017_site_map_index.sql', :'site_map_sha')
+    (17, '017_site_map_index.sql', :'site_map_sha'),
+    (18, '018_auth_tenant_list.sql', :'tenant_list_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -56,13 +57,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 14), false) AS has_asset_categories,
   COALESCE(bool_or(m.version = 15), false) AS has_site_catalog,
   COALESCE(bool_or(m.version = 16), false) AS has_site_location,
-  COALESCE(bool_or(m.version = 17), false) AS has_site_map
+  COALESCE(bool_or(m.version = 17), false) AS has_site_map,
+  COALESCE(bool_or(m.version = 18), false) AS has_tenant_list
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_tenant_list
+  \if :has_site_map
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 018 sem versão 017'; END $$;
+  \endif
 \endif
 
 \if :has_site_map
@@ -312,6 +321,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../017_site_map_index.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (17, '017_site_map_index.sql', :'site_map_sha');
+\endif
+
+\if :has_tenant_list
+\else
+  \ir ../018_auth_tenant_list.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (18, '018_auth_tenant_list.sql', :'tenant_list_sha');
 \endif
 
 COMMIT;
