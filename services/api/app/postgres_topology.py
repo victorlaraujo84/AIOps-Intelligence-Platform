@@ -10,7 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from .postgres_asset_write import get_asset_write_pool
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import get_inventory_pool, inventory_read_transaction
-from .postgres_inventory_write import Name, audit_inventory_write, inventory_write_transaction, lock_inventory_graph
+from .postgres_inventory_write import (
+    Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction, lock_inventory_graph,
+)
 
 
 class TopologyRoute(APIRoute):
@@ -114,7 +116,7 @@ async def list_shared_upstream(
 async def create_edge(
     body: CreateEdge,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):
@@ -143,7 +145,7 @@ async def create_edge(
 @router.delete("/edges/{edge_id}", status_code=204)
 async def delete_edge(
     edge_id: UUID,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):

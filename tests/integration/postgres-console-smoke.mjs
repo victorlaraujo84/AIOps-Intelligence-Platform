@@ -323,6 +323,72 @@ if (process.argv.includes('--dependency-writes')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--topology-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const admin = client();
+  const path = '/inventory/topology/edges';
+  const login = (session, email, password) => session('/login', { data: { email, password } });
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const list = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  assert.equal((await a(path)).status, 401);
+  assert.equal((await login(a, 'operator-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(b, 'operator-b-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(viewer, 'viewer-auth@example.invalid', 'viewer-ci-fixture-only')).status, 204);
+  const own = (await list(a, '/inventory/assets')).items;
+  const foreign = (await list(b, '/inventory/assets')).items.find(row => row.name === 'Ativo B');
+  const source = own.find(row => row.name === 'Ativo A');
+  const target = own.find(row => row.name === 'Ativo Runtime');
+  const data = {
+    source_asset_id: source.id, target_asset_id: target.id, link_type: 'piloto-https',
+    provider_name: 'Operadora de teste', capacity_mbps: 0, is_redundant: true,
+  };
+  const add = (session, payload = data) => session(path, { data: payload, headers: scope(tenantA) });
+  assert.equal((await a(path, { data })).status, 422);
+  assert.equal((await add(viewer)).status, 403);
+  assert.equal((await add(a, { ...data, target_asset_id: foreign.id })).status, 422);
+  assert.equal((await add(a, { ...data, capacity_mbps: -1 })).status, 422);
+  const created = await add(a);
+  assert.equal(created.status, 201);
+  const edge = await created.json();
+  assert.equal(edge.tenant_id, tenantA);
+  assert.equal((await add(a)).status, 409);
+  assert.equal((await add(a, { ...data, source_asset_id: target.id, target_asset_id: source.id })).status, 409);
+  const { items } = await list(viewer, path + '?tenant_id=' + tenantB);
+  const row = items.find(item => item.id === edge.id);
+  assert.deepEqual(
+    [row.source_asset_name, row.target_asset_name, row.provider_name, row.capacity_mbps, row.is_redundant],
+    [source.name, target.name, data.provider_name, 0, true],
+  );
+  assert.ok(!(await list(b, path)).items.some(item => item.id === edge.id));
+  const page = await list(viewer, path + '?limit=1');
+  assert.ok(page.next_after);
+  assert.notEqual((await list(viewer, path + '?limit=1&after=' + page.next_after)).items[0].id, page.items[0].id);
+
+  const remove = (session, tenant, extra = {}) => session(path + '/' + edge.id, {
+    method: 'DELETE', data: {}, headers: { ...scope(tenant), ...extra },
+  });
+  assert.equal((await remove(viewer, tenantA)).status, 403);
+  assert.equal((await remove(b, tenantB)).status, 404);
+  assert.equal((await remove(a, tenantA, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await login(admin, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
+  assert.equal((await admin('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(admin, tenantA)).status, 409);
+  assert.equal((await remove(a, tenantA)).status, 204);
+  assert.equal((await remove(a, tenantA)).status, 404);
+  assert.ok(!(await list(viewer, path)).items.some(item => item.id === edge.id));
+  for (const session of [a, b, viewer, admin]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Enlaces topológicos consultados, cadastrados e removidos por HTTPS com isolamento por tenant.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -354,6 +420,8 @@ const box = '/inventory/sites/map?west=-47&south=-24&east=-46&north=-23';
 const ownMap = await (await operator(box)).json();
 assert.deepEqual(ownMap.items.map(site => site.code), ['MAP-SITE']);
 assert.equal((await operator('/inventory/connectors')).status, 404);
+assert.equal((await operator('/inventory/topology/edges')).status, 200);
+assert.equal((await operator('/inventory/topology/edges', { data: {} })).status, 404);
 assert.equal((await operator('/inventory/sites', { data: { name: 'fixture', code: 'fixture' } })).status, 404);
 assert.equal((await operator('/logout', { data: {} })).status, 204);
 assert.equal((await operator('/me')).status, 401);
