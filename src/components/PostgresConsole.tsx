@@ -5,6 +5,7 @@ import { ConsoleError, errorMessage, post, request } from '../lib/postgres-conso
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
 import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.tsx';
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
+import { PostgresConnectorCreate, PostgresConnectorImport } from './PostgresConnectorForms.tsx';
 import { PostgresIncidentDetail } from './PostgresIncidentDetail.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { isWritableCatalog, PostgresCatalogCreate } from './PostgresCatalogCreate.tsx';
@@ -138,12 +139,13 @@ function TenantSelector({ active, busy, onSwitch }: {
   );
 }
 
-function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onView, onRemove, removalDisabled, removalResource }: {
+function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onView, viewLabel = 'Detalhes', onRemove, removalDisabled, removalResource }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
   onVerify?: (row: Row) => void;
   onView?: (row: Row) => void;
+  viewLabel?: string;
   onDependencies?: (row: Row) => void;
   onRemove?: (row: Row) => void;
   removalDisabled?: boolean;
@@ -164,7 +166,7 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onVie
             {columns.map(([key]) => <td key={key} className="px-3 py-2">{row[key] ?? '—'}</td>)}
             {hasActions && <td className="px-3 py-2">
               <div className="flex flex-wrap gap-2">
-                {onView && <button type="button" className={button} aria-label={'Detalhes de ' + row.title} onClick={() => onView(row)}>Detalhes</button>}
+                {onView && <button type="button" className={button} aria-label={viewLabel + ' de ' + (row.title ?? row.name)} onClick={() => onView(row)}>{viewLabel}</button>}
                 {onEdit && <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>}
                 {onVerify && <button type="button" className={button} aria-label={'Verificar coordenadas de ' + row.name}
                   onClick={() => onVerify(row)}>Verificar coordenadas</button>}
@@ -339,6 +341,34 @@ function ServicesInventory({ tenant, columns, mayWrite, mayRemove }: {
   )} />;
 }
 
+function ConnectorInventory({ tenant, mayCreate, mayIngest, columns }: {
+  tenant: string; mayCreate: boolean; mayIngest: boolean; columns: readonly Column[];
+}) {
+  const [connector, setConnector] = useState<Row | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
+
+  if (connector) return <PostgresConnectorImport key={connector.id} tenant={tenant} connector={connector.id}
+    name={String(connector.name)} onClose={() => setConnector(null)} onImported={result => {
+      setConnector(null);
+      setRevision(previous => previous + 1);
+      setNotice(`${result.ingested} ingeridos, ${result.deduplicated} duplicados e ${result.created_incidents} novos incidentes.`);
+    }} />;
+
+  return (
+    <div className="space-y-3">
+      {mayCreate && <PostgresConnectorCreate tenant={tenant} onCreated={() => {
+        setRevision(previous => previous + 1);
+        setNotice('Conector cadastrado.');
+      }} />}
+      {notice && <p role="status" className="text-sm text-slate-300">{notice}</p>}
+      <PagedData<Row> key={revision} endpoint="/inventory/connectors" render={rows => (
+        <InventoryTable columns={columns} rows={rows} onView={mayIngest ? setConnector : undefined} viewLabel="Importar eventos" />
+      )} />
+    </div>
+  );
+}
+
 function IncidentInventory({ tenant, mayReview, itsm, columns }: { tenant: string; mayReview: boolean; itsm: boolean; columns: readonly Column[] }) {
   const [incident, setIncident] = useState<string | null>(null);
   if (incident) {
@@ -405,6 +435,7 @@ export default function PostgresConsole() {
   const [assetWrites, setAssetWrites] = useState(false);
   const [serviceWrites, setServiceWrites] = useState(false);
   const [incidentWrites, setIncidentWrites] = useState(false);
+  const [connectorWrites, setConnectorWrites] = useState(false);
   const [itsm, setItsm] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -415,13 +446,14 @@ export default function PostgresConsole() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; itsm: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; connector_writes: boolean; itsm: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
         setServiceWrites(status.service_writes);
         setIncidentWrites(status.incident_writes);
+        setConnectorWrites(status.connector_writes);
         setItsm(status.itsm);
         setUserAdmin(status.user_admin);
         setTenantCreation(status.tenant_creation);
@@ -537,6 +569,9 @@ export default function PostgresConsole() {
                     render={(rows, onRemove, disabled) => (
                       <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} removalResource="concessão" />
                     )} />
+                ) : resource.id === 'connectors' ? (
+                  <ConnectorInventory tenant={identity.active_tenant_id} columns={resource.columns}
+                    mayCreate={isAdmin && connectorWrites} mayIngest={mayWrite && connectorWrites} />
                 ) : resource.id === 'incidents' ? (
                   <IncidentInventory tenant={identity.active_tenant_id} columns={resource.columns}
                     mayReview={mayWrite && incidentWrites} itsm={itsm} />

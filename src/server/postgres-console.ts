@@ -67,6 +67,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const router = Router();
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
+  const connectorWrites = pilotOnly && process.env.AIOPS_POSTGRES_CONNECTOR_WRITES === 'true';
   const incidentWrites = pilotOnly && process.env.AIOPS_POSTGRES_INCIDENT_WRITES === 'true';
   const itsm = pilotOnly && process.env.AIOPS_POSTGRES_ITSM === 'true';
   const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
@@ -89,7 +90,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
 
   router.get('/status', (_req, res) => {
     res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites,
-      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites, itsm });
+      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites, connector_writes: connectorWrites, itsm });
   });
 
   router.post('/login', async (req, res) => {
@@ -211,6 +212,23 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   }
   router.get('/inventory/incidents/:id', incident);
   if (incidentWrites) router.patch('/inventory/incidents/:id/rca-review', incident);
+
+  if (connectorWrites) {
+    async function connectorIngest(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.id;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de conector ou tenant inválido.' });
+        return;
+      }
+      const action = id ? '/' + id + '/ingest' : '';
+      forward(res, await callCore('/inventory/connectors' + action, token, req.body ?? {}, expected));
+    }
+    router.post('/inventory/connectors', connectorIngest);
+    router.post('/inventory/connectors/:id/ingest', connectorIngest);
+  }
 
   if (itsm) {
     async function incidentTickets(req: Request, res: Response) {
