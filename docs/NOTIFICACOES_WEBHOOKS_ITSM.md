@@ -86,3 +86,11 @@ Converter incidentes correlacionados em comunicações e fluxos de atendimento c
 
 ## Contrato do ITSM genérico
 Ver `docs/ITSM_GENERICO_CONTRATOS.md` e `docs/PLANO_IMPLEMENTACAO_ITSM_GENERICO_CODEX.md`. Não inferir que um adapter HTTP genérico cobre qualquer ITSM sem mapeamento e testes.
+
+## Fila de eventos de incidentes no PostgreSQL
+
+A migração 028 grava mudanças de estado na fila interna na mesma transação que o incidente. Importações históricas por inserção ficam fora da fila. O envelope contém identificadores, estados, severidade e horário, com acesso restrito às funções da fila. O identificador de evento permanece igual em uma nova tentativa.
+
+O papel `aiops_notification_worker` permite reservar um lote com prazo de processamento e concluir apenas a tentativa cujo prazo ainda está válido. Falhas temporárias usam espera exponencial com variação aleatória. Falha permanente ou oito tentativas levam o evento a `DEAD_LETTER`. O estado `PROCESSED` é o reconhecimento do processamento interno. A comprovação de entrega exige o registro separado da tentativa no destino.
+
+A migração prepara o armazenamento e a recuperação de transições. O provisionamento do worker, o roteamento por política, as entregas e a abertura de incidentes por ingestão fazem parte das próximas etapas.

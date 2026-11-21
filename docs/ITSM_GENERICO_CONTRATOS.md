@@ -90,3 +90,21 @@ Endpoints são **proposta de API interna**, não endpoints de fornecedor.
 
 ## Pendências para implantação real
 URL/versão/API do ITSM, autenticação, sandbox, esquema dos tickets, estados e transições, prioridade, regras de sincronização, rede permitida, credenciais e política de compartilhamento. Essas dependências não bloqueiam a criação de contratos, schemas, mocks **explicitamente de teste** e testes unitários.
+
+## Destinos de homologação
+
+Os quatro destinos usam o mesmo contrato interno. Zere as capacidades verificadas ao trocar URL, credencial, versão ou mapeamento. As configurações abaixo ficam em `NOT_CONFIGURED` até o provisionamento de cada sandbox.
+
+| Destino | Contrato a configurar e validar |
+|---|---|
+| GLPI | Confirme a versão e o escopo de chamados. Para a API V2, derive as rotas e campos do Swagger da instância. O cliente inicial usa a API V1 e encerra a sessão após cada operação. [Documentação GLPI V1](https://github.com/glpi-project/glpi/blob/12.0/bugfixes/apirest.md) · [Documentação GLPI V2](https://help.glpi-project.org/documentation/modules/configuration/general/api/restful-api-v2) |
+| ServiceNow | Configure a versão da Table API, a tabela `incident`, as permissões de campo e as transições aprovadas. A referência remota da integração deve guardar o `sys_id`. [Criação de incidentes](https://www.servicenow.com/docs/r/api-reference/rest-api-explorer/t_GetStartedCreateInt.html) · [Table API](https://www.servicenow.com/docs/r/api-reference/rest-apis/c_TableAPI.html) |
+| Jira Service Management | Use o contrato Cloud como referência inicial. Confirme a edição da instância, o service desk, o tipo de solicitação, os campos obrigatórios e as transições disponíveis no projeto. [API de solicitações do JSM Cloud](https://developer.atlassian.com/cloud/jira/service-desk/rest/api-group-request/) |
+| TOPdesk | Confirme a versão, o escopo da conta de operador, os campos obrigatórios e os estados disponíveis no sandbox. [API Incident Management](https://developers.topdesk.com/explorer/?page=incident) |
+
+Comece com uma consulta autenticada a um item de teste existente. Valide criação e transições em seguida, com um chamado de teste identificável e limpeza combinada com o responsável pelo sandbox. Registre a evidência de cada capacidade separadamente.
+
+
+O cliente HTTP inclui criação e consulta. As demais operações aguardam os mapeamentos e o orquestrador. Em uma resposta de criação sem identificador, erro de rede ou falha remota ambígua, o resultado é `NEEDS_RECONCILIATION`. Nenhuma tentativa de criação é repetida automaticamente pelo cliente.
+
+Para verificar apenas a consulta quando houver um sandbox, use `node --import tsx scripts/check-itsm-connection.ts ARQUIVO_PRIVADO ID_DE_TESTE`. O arquivo JSON com permissões `0600` usa `provider`, `baseUrl`, `allowedOrigin` e `auth`. Os valores de `provider` são `glpi`, `servicenow`, `jira-service-management` e `topdesk`. Em `auth`, configure `method` como `glpi_session` com `userToken` e `appToken` opcional, `basic` com `username` e `apiPassword`, ou `bearer` com `accessToken`, conforme o destino. Informe também `callerId` para TOPdesk e `serviceDeskId` e `requestTypeId` para JSM. Configure `allowedOrigin` com a origem HTTPS autorizada e use um chamado de teste existente. A saída do comando registra apenas o resultado da consulta.
