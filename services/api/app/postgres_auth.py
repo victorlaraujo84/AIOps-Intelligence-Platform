@@ -9,7 +9,7 @@ from typing import Annotated
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -176,6 +176,29 @@ async def login(body: LoginRequest, response: Response, auth: Annotated[Postgres
 async def me(response: Response, identity: Annotated[asyncpg.Record, Depends(get_current_session)]):
     response.headers.update(AUTH_HEADERS)
     return dict(identity)
+
+
+@router.get("/tenants")
+async def list_tenants(
+    response: Response,
+    auth: Annotated[PostgresAuth, Depends(get_auth)],
+    token: Annotated[str, Depends(get_token)],
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    after: UUID | None = None,
+):
+    try:
+        rows = await auth.pool.fetch(
+            "SELECT * FROM aiops_auth.list_tenants($1, $2, $3)",
+            auth.token_hash(token), after, limit + 1, timeout=5,
+        )
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+        raise HTTPException(503, "Lista de tenants temporariamente indisponível.", headers=AUTH_HEADERS) from None
+    response.headers.update(AUTH_HEADERS)
+    return {
+        "items": [dict(row) for row in rows[:limit]],
+        "next_after": rows[limit - 1]["id"] if len(rows) > limit else None,
+    }
 
 
 @router.post("/switch-tenant")

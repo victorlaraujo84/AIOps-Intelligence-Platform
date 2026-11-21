@@ -220,6 +220,18 @@ A migração 017 cria um índice por tenant, latitude e longitude para os sites 
 
 A API retorna marcadores com ponto verificado do tenant da sessão. Use `limit` para pedir até 500 marcadores. Quando houver `next_after`, passe esse valor como `after` na próxima consulta com os mesmos limites.
 
+### Console PostgreSQL de homologação
+
+A migração 018 permite que o administrador global liste tenants ativos para seleção. Contas de tenant recebem o próprio tenant. O Web usa uma sessão PostgreSQL independente, com cookie HTTPS, para o inventário de consulta e o mapa.
+
+Configure os DSNs de autenticação e leitura e provisione as contas de teste no PostgreSQL. Suba um projeto de homologação com o arquivo Compose adicional.
+
+```bash
+docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core up -d --build --wait
+```
+
+Acesse `/postgres-inventory` pelo HTTPS do proxy. Entre com uma conta PostgreSQL da homologação. Administradores globais selecionam o tenant antes de abrir o inventário. O piloto oferece consulta de sites, ativos, serviços, categorias, concessões, tipos de localidade e mapa de sites verificados. O Compose adicional conecta o Web à rede interna do FastAPI. Para retirar o piloto, recrie o Web com o Compose principal.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

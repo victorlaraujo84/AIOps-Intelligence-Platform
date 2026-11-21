@@ -1,0 +1,7 @@
+services:
+  web:
+    environment:
+      AIOPS_POSTGRES_CONSOLE: "true"
+    networks:
+      - edge
+      - backend

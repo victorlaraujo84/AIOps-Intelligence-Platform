@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { isTargetAuthorizedInScope, type CollectionProtocol } from './collection.ts';
 import { initializeTenantTaxonomy, openDatabase, writeAuditLog } from './db.ts';
+import { postgresConsoleRouter } from './postgres-console.ts';
 import { validateOutboundHttpsUrl } from './outbound-http.ts';
 import {
   CONNECTOR_CATALOG,
@@ -114,6 +115,8 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
       res.status(503).json({ status: 'degraded', db: 'error' });
     }
   });
+
+  app.use('/api/postgres-console', postgresConsoleRouter(process.env.AIOPS_POSTGRES_CONSOLE === 'true'));
 
   // Middleware de autenticação
   function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction) {

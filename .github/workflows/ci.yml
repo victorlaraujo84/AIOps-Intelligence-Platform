@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -183,6 +183,15 @@ jobs:
           SQL
           )
           test "$audit_counts" = $'ASSET_CATEGORY_CREATED|3\nASSET_CREATED|2\nASSET_UPDATED|1\nCONCESSION_CREATED|2\nLOCALITY_TYPE_CREATED|2\nSERVICE_CREATED|2\nSERVICE_DEPENDENCY_CREATED|4\nSERVICE_DEPENDENCY_DELETED|2\nSERVICE_UPDATED|1\nSITE_COORDS_VERIFIED|1\nSITE_CREATED|4\nSITE_UPDATED|3\nTOPOLOGY_EDGE_CREATED|5\nTOPOLOGY_EDGE_DELETED|1'
+      - name: Validar console PostgreSQL via HTTPS
+        run: |
+          ca="$RUNNER_TEMP/aiops-root.crt"
+          status=$(curl --silent --show-error --cacert "$ca" --output /dev/null --write-out '%{http_code}' \
+            https://localhost/api/postgres-console/status)
+          test "$status" = 404
+          docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core \
+            up -d --no-deps --force-recreate --wait web
+          NODE_EXTRA_CA_CERTS="$ca" node tests/integration/postgres-console-smoke.mjs
       - name: Estado do ambiente em caso de falha
         if: failure()
         run: |
