@@ -1,16 +1,26 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_router
+from .postgres_inventory import postgres_inventory_lifespan, router as postgres_inventory_router
 from .schemas import HonestState
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async with postgres_auth_lifespan(app), postgres_inventory_lifespan(app):
+        yield
 
 app = FastAPI(
     title="AIOps Intelligence Platform — Core API",
     version="1.0.0",
-    lifespan=postgres_auth_lifespan,
+    lifespan=lifespan,
     description="Backend modular FastAPI multi-tenant com RLS, ingestão espaço-temporal, RCA e ML local.",
 )
 
 app.include_router(postgres_auth_router)
+app.include_router(postgres_inventory_router)
 
 
 @app.get("/health")

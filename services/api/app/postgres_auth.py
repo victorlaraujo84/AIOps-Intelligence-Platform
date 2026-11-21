@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 from typing import Annotated
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
@@ -54,6 +55,10 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"], route_class=A
 class LoginRequest(BaseModel):
     email: Annotated[str, Field(min_length=1, max_length=254)]
     password: Annotated[SecretStr, Field(min_length=1, max_length=1024)]
+
+
+class SelectTenantRequest(BaseModel):
+    tenant_id: UUID
 
 
 def verify_scrypt(password: str, stored_hash: str) -> bool:
@@ -148,6 +153,16 @@ def get_token(credentials: Annotated[HTTPAuthorizationCredentials | None, Depend
     return credentials.credentials
 
 
+async def get_current_session(
+    auth: Annotated[PostgresAuth, Depends(get_auth)],
+    token: Annotated[str, Depends(get_token)],
+) -> asyncpg.Record:
+    row = await auth.query("SELECT * FROM aiops_auth.find_session($1)", auth.token_hash(token))
+    if row is None:
+        raise unauthorized()
+    return row
+
+
 @router.post("/login")
 async def login(body: LoginRequest, response: Response, auth: Annotated[PostgresAuth, Depends(get_auth)]):
     token = await auth.login(body.email.strip().lower(), body.password.get_secret_value())
@@ -158,16 +173,28 @@ async def login(body: LoginRequest, response: Response, auth: Annotated[Postgres
 
 
 @router.get("/me")
-async def me(
+async def me(response: Response, identity: Annotated[asyncpg.Record, Depends(get_current_session)]):
+    response.headers.update(AUTH_HEADERS)
+    return dict(identity)
+
+
+@router.post("/switch-tenant")
+async def switch_tenant(
+    body: SelectTenantRequest,
     response: Response,
     auth: Annotated[PostgresAuth, Depends(get_auth)],
     token: Annotated[str, Depends(get_token)],
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
 ):
-    row = await auth.query("SELECT * FROM aiops_auth.find_session($1)", auth.token_hash(token))
-    if row is None:
-        raise unauthorized()
+    if identity["role"] != "super_admin":
+        raise HTTPException(403, "Somente administradores globais podem selecionar outros tenants.", headers=AUTH_HEADERS)
+    result = await auth.query(
+        "SELECT aiops_auth.select_tenant($1, $2) AS selected", auth.token_hash(token), body.tenant_id,
+    )
+    if not result["selected"]:
+        raise HTTPException(404, "Tenant ativo indisponível.", headers=AUTH_HEADERS)
     response.headers.update(AUTH_HEADERS)
-    return dict(row)
+    return {"active_tenant_id": body.tenant_id}
 
 
 @router.post("/logout", status_code=204)

@@ -5,7 +5,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-BASE = "http://127.0.0.1:8000/api/v1/auth"
+BASE = "http://127.0.0.1:8000/api/v1"
+TENANT_A = "00000000-0000-4000-b000-000000000001"
+SUSPENDED = "00000000-0000-4000-b000-000000000002"
+TENANT_B = "00000000-0000-4000-b000-000000000003"
 
 
 def request(path, *, data=None, token=None):
@@ -26,7 +29,7 @@ def request(path, *, data=None, token=None):
 
 
 def login(email, password):
-    return request("login", data={"email": email, "password": password})
+    return request("auth/login", data={"email": email, "password": password})
 
 
 def main():
@@ -35,7 +38,7 @@ def main():
         result = login(email, "operator-ci-fixture-only")
         assert result[:2] == invalid[:2]
     assert invalid[0] == 401
-    assert request("me")[0] == 401
+    assert request("auth/me")[0] == 401
 
     status, validation, _ = login("operator-auth@example.invalid", "fixture-sensitive" * 100)
     assert status == 422 and validation == {"detail": "Dados de autenticação inválidos."}
@@ -45,23 +48,49 @@ def main():
     assert headers["Cache-Control"] == "no-store"
     operator_token = data["access_token"]
 
-    status, operator, _ = request("me", token=operator_token)
+    status, operator, _ = request("auth/me", token=operator_token)
     assert status == 200 and operator["role"] == "tenant_operator"
-    assert operator["active_tenant_id"] == "00000000-0000-4000-b000-000000000001"
+    assert operator["active_tenant_id"] == TENANT_A
     assert set(operator) == {"id", "email", "full_name", "role", "tenant_id", "active_tenant_id", "expires_at_utc"}
 
     status, data, _ = login("global-auth@example.invalid", "global-ci-fixture-only")
     assert status == 200
     global_token = data["access_token"]
-    status, administrator, _ = request("me", token=global_token)
+    status, administrator, _ = request("auth/me", token=global_token)
     assert status == 200 and administrator["role"] == "super_admin"
     assert administrator["tenant_id"] is None and administrator["active_tenant_id"] is None
 
-    assert request("logout", data={}, token=operator_token)[0] == 204
-    assert request("me", token=operator_token)[0] == 401
-    assert request("me", token=global_token)[0] == 200
-    assert request("logout", data={}, token=global_token)[0] == 204
-    print("Login scrypt, escopo, sessão e logout do FastAPI validados com PostgreSQL.")
+    assert request("inventory/sites")[0] == 401
+    assert request("inventory/sites", token=global_token)[0] == 409
+    assert request("auth/switch-tenant", data={"tenant_id": SUSPENDED}, token=global_token)[0] == 404
+    assert request("auth/switch-tenant", data={"tenant_id": TENANT_B}, token=operator_token)[0] == 403
+    status, page, headers = request(f"inventory/sites?limit=1&tenant_id={TENANT_B}", token=operator_token)
+    assert status == 200 and [row["code"] for row in page["items"]] == ["a-1"]
+    assert headers["Cache-Control"] == "no-store"
+    status, second_page, _ = request(f"inventory/sites?limit=1&after={page['next_after']}", token=operator_token)
+    assert status == 200 and [row["code"] for row in second_page["items"]] == ["a-2"]
+    assert second_page["next_after"] is None
+
+    status, data, _ = login("operator-b-auth@example.invalid", "operator-ci-fixture-only")
+    assert status == 200
+    operator_b_token = data["access_token"]
+    for resource, expected_name in (("assets", "Ativo B"), ("services", "Serviço B"), ("sites", "Site B1")):
+        status, page_b, _ = request(f"inventory/{resource}", token=operator_b_token)
+        assert status == 200 and [row["name"] for row in page_b["items"]] == [expected_name]
+        assert all(row["tenant_id"] == TENANT_B for row in page_b["items"])
+
+    for selected, expected_codes in ((TENANT_B, ["b-1"]), (TENANT_A, ["a-1", "a-2"])):
+        status, selected_body, _ = request("auth/switch-tenant", data={"tenant_id": selected}, token=global_token)
+        assert status == 200 and selected_body["active_tenant_id"] == selected
+        status, global_page, _ = request("inventory/sites", token=global_token)
+        assert status == 200 and [row["code"] for row in global_page["items"]] == expected_codes
+
+    assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
+    assert request("auth/logout", data={}, token=operator_token)[0] == 204
+    assert request("auth/me", token=operator_token)[0] == 401
+    assert request("auth/me", token=global_token)[0] == 200
+    assert request("auth/logout", data={}, token=global_token)[0] == 204
+    print("Login, troca de tenant, leitura paginada isolada e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":
