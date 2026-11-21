@@ -249,6 +249,12 @@ docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postg
 
 A carga grava o inventário e os hashes de autenticação em uma transação, somente no banco dedicado e vazio. Inicie uma nova sessão no piloto com as credenciais da cópia. O piloto representa o momento do backup. Para voltar ao console original, acesse o endereço habitual e pare o projeto piloto com `docker compose stop` usando os mesmos arquivos e nome de projeto.
 
+#### Cadastro e edição de sites no piloto
+
+Configure `AIOPS_POSTGRES_SITE_WRITE_DSN` com uma conta dedicada ao papel de sites e defina `AIOPS_POSTGRES_PILOT_WRITE_SITES=true` no ambiente do projeto piloto. Recrie o Web e a API com os mesmos arquivos Compose. O formulário permite cadastrar e editar sites, incluindo vínculos com concessões e tipos de localidade do tenant selecionado. Cada alteração é auditada. As gravações pertencem ao banco PostgreSQL do piloto.
+
+Ao trocar de tenant em outra aba, salve apenas depois de atualizar a sessão nesta aba. A API confere se o tenant do formulário corresponde à sessão. Para voltar ao modo de consulta, remova a flag e recrie o Web.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

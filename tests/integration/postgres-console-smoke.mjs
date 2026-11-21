@@ -31,7 +31,7 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.status, 302);
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
-  assert.deepEqual(await (await imported('/status')).json(), { enabled: true, pilot_only: true });
+  assert.deepEqual(await (await imported('/status')).json(), { enabled: true, pilot_only: true, site_writes: false });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
     data: { email: 'operator@example.invalid', password: 'operator-fixture-only' },
@@ -52,6 +52,67 @@ if (process.argv.includes('--imported-pilot')) {
   assert.deepEqual(markers.items.map(site => [site.code, site.latitude, site.longitude]), [['site', -23.55, -46.63]]);
   assert.equal((await imported('/logout', { data: {} })).status, 204);
   console.log('Console autenticou a conta migrada e consultou inventário e mapa importados.');
+  process.exit(0);
+}
+
+if (process.argv.includes('--site-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const global = client();
+  const loginAs = (session, email, password) => session('/login', { data: { email, password } });
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const path = '/inventory/sites';
+  assert.equal((await (await a('/status')).json()).site_writes, true);
+  assert.equal((await a(path, { data: {}, headers: scope(tenantA) })).status, 401);
+  assert.equal((await loginAs(a, 'operator-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await loginAs(b, 'operator-b-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await loginAs(viewer, 'viewer-auth@example.invalid', 'viewer-ci-fixture-only')).status, 204);
+
+  const payload = { code: 'pilot-edit', name: 'Site do piloto', cep: '01234-567' };
+  assert.equal((await a(path, { data: payload })).status, 422);
+  assert.equal((await a(path, { data: { ...payload, tenant_id: tenantB }, headers: scope(tenantA) })).status, 422);
+  assert.equal((await viewer(path, { data: payload, headers: scope(tenantA) })).status, 403);
+  const ownConcessions = await (await a('/inventory/concessions')).json();
+  const foreignConcessions = await (await b('/inventory/concessions')).json();
+  assert.equal((await a(path, {
+    data: { ...payload, concession_id: foreignConcessions.items[0].id }, headers: scope(tenantA),
+  })).status, 422);
+
+  const created = await a(path, {
+    data: { ...payload, concession_id: ownConcessions.items[0].id }, headers: scope(tenantA),
+  });
+  assert.equal(created.status, 201);
+  const site = await created.json();
+  assert.equal(site.code, 'PILOT-EDIT');
+  assert.equal(site.tenant_id, tenantA);
+  assert.equal(site.cep, '01234567');
+  assert.equal((await a(path, { data: payload, headers: scope(tenantA) })).status, 409);
+  const edit = path + '/' + site.id;
+  const patch = (session, tenant, data, headers = {}) =>
+    session(edit, { method: 'PATCH', data, headers: { ...scope(tenant), ...headers } });
+  assert.equal((await patch(b, tenantB, { name: 'Outro tenant' })).status, 404);
+  assert.equal((await patch(viewer, tenantA, { name: 'Leitor' })).status, 403);
+  assert.equal((await patch(a, tenantA, { name: 'Origem externa' }, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await patch(a, tenantA, { name: 'Formato incorreto' }, { 'Content-Type': 'text/plain' })).status, 403);
+  const updated = await patch(a, tenantA, { name: 'Site do piloto atualizado' });
+  assert.equal(updated.status, 200);
+  assert.equal((await updated.json()).concession_id, ownConcessions.items[0].id);
+
+  assert.equal((await loginAs(global, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantA } })).status, 200);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await global(path, {
+    data: { code: 'stale-tab', name: 'Formulário de outro tenant' }, headers: scope(tenantA),
+  })).status, 409);
+  const readB = await (await b(path)).json();
+  assert.ok(!readB.items.some(item => item.code === 'STALE-TAB' || item.id === site.id));
+  const readA = await (await a(path)).json();
+  assert.equal(readA.items.find(item => item.id === site.id)?.name, 'Site do piloto atualizado');
+  for (const session of [a, b, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Cadastro e edição de sites verificados com permissões, vínculos e proteção contra tenant desatualizado.');
   process.exit(0);
 }
 

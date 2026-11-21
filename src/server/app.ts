@@ -119,7 +119,8 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
   const postgresConsole = process.env.AIOPS_POSTGRES_CONSOLE === 'true';
   const pilotOnly = process.env.AIOPS_POSTGRES_PILOT_ONLY === 'true';
   if (pilotOnly && !postgresConsole) throw new Error('O piloto exige o Compose do console PostgreSQL.');
-  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, pilotOnly));
+  const siteWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SITES === 'true';
+  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, pilotOnly, siteWrites));
 
   if (pilotOnly) {
     app.get('/', (_req, res) => res.redirect(302, '/postgres-inventory'));
