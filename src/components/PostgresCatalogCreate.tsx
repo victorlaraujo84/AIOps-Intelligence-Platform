@@ -14,11 +14,12 @@ export function isWritableCatalog(resource: string): resource is Catalog {
   return Object.hasOwn(catalogs, resource);
 }
 
-export function PostgresCatalogCreate<Row extends { id: string }>({ catalog, tenant, mayWrite, render }: {
+export function PostgresCatalogCreate<Row extends { id: string; name?: string | number | null }>({ catalog, tenant, mayWrite, mayRemove, render }: {
   catalog: Catalog;
   tenant: string;
   mayWrite: boolean;
-  render: (rows: Row[]) => ReactNode;
+  mayRemove: boolean;
+  render: (rows: Row[], onRemove: ((row: Row) => void) | undefined, disabled: boolean) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -40,14 +41,20 @@ export function PostgresCatalogCreate<Row extends { id: string }>({ catalog, ten
       setError('Preencha os campos obrigatórios.');
       return;
     }
+    await change(endpoint, 'POST', payload, config.saved);
+  }
+
+  async function change(path: string, method: 'POST' | 'DELETE', payload: object, message: string) {
     setPending(true);
+    setError('');
+    setNotice('');
     try {
-      await request(endpoint, {
-        method: 'POST',
+      await request(path, {
+        method,
         headers: { 'Content-Type': 'application/json', 'X-AIOps-Expected-Tenant': tenant },
         body: JSON.stringify(payload),
       });
-      setNotice(config.saved);
+      setNotice(message);
       setOpen(false);
       setRevision(previous => previous + 1);
     } catch (error) {
@@ -57,11 +64,18 @@ export function PostgresCatalogCreate<Row extends { id: string }>({ catalog, ten
     }
   }
 
+  function remove(row: Row) {
+    const confirmed = window.confirm(`Excluir a concessão “${row.name}”? Os sites vinculados ficarão sem concessão.`);
+    if (confirmed) void change(endpoint + '/' + row.id, 'DELETE', {}, 'Concessão excluída.');
+  }
+
   return (
     <div className="space-y-4">
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
+      {error && <Message>{error}</Message>}
       {mayWrite && !open && (
-        <button type="button" className={button} onClick={() => {
+        <button type="button" className={button} disabled={pending} onClick={() => {
+          setError('');
           setNotice('');
           setOpen(true);
         }}>{config.action}</button>
@@ -91,7 +105,6 @@ export function PostgresCatalogCreate<Row extends { id: string }>({ catalog, ten
               </label>
             )}
           </fieldset>
-          {error && <Message>{error}</Message>}
           <div className="flex gap-2">
             <button type="submit" className={button} disabled={pending}>Cadastrar</button>
             <button type="button" className={button} disabled={pending} onClick={() => {
@@ -101,7 +114,8 @@ export function PostgresCatalogCreate<Row extends { id: string }>({ catalog, ten
           </div>
         </form>
       )}
-      <PagedData<Row> key={revision} endpoint={endpoint} render={render} />
+      <PagedData<Row> key={revision} endpoint={endpoint}
+        render={rows => render(rows, mayRemove ? remove : undefined, pending || open)} />
     </div>
   );
 }

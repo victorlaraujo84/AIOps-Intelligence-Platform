@@ -1,5 +1,6 @@
 import re
 from typing import Annotated
+from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -56,6 +57,25 @@ async def create_concession(
         await audit_inventory_write(connection, tenant, identity, "CONCESSION_CREATED", "concession", concession["id"])
     response.headers.update(AUTH_HEADERS)
     return dict(concession)
+
+
+@router.delete("/concessions/{concession_id}", status_code=204)
+async def delete_concession(
+    concession_id: UUID,
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
+    pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
+):
+    if identity["role"] not in {"tenant_admin", "super_admin"}:
+        raise HTTPException(403, "Apenas administradores podem excluir concessões.", headers=AUTH_HEADERS)
+    async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
+        removed_id = await connection.fetchval(
+            "DELETE FROM public.concessions WHERE tenant_id = $1 AND id = $2 RETURNING id",
+            tenant, concession_id,
+        )
+        if removed_id is None:
+            raise HTTPException(404, "Concessão não encontrada neste tenant.", headers=AUTH_HEADERS)
+        await audit_inventory_write(connection, tenant, identity, "CONCESSION_DELETED", "concession", removed_id)
+    return Response(status_code=204, headers=AUTH_HEADERS)
 
 
 @router.post("/locality-types", status_code=201)

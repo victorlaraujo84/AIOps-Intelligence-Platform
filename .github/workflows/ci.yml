@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -298,6 +298,21 @@ jobs:
           SQL
           )
           test "$counts" = $'ASSET_CATEGORY_CREATED|2\nCONCESSION_CREATED|1\nLOCALITY_TYPE_CREATED|1'
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --concession-delete
+          removed=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT count(*)
+          FROM audit_logs a
+          JOIN users u ON u.id = a.actor_user_id AND u.tenant_id = a.tenant_id
+          JOIN audit_logs c ON c.resource_id = a.resource_id AND c.tenant_id = a.tenant_id
+            AND c.resource_type = 'concession' AND c.action = 'CONCESSION_CREATED'
+          WHERE a.resource_type = 'concession' AND a.action = 'CONCESSION_DELETED'
+            AND a.actor_role = 'tenant_admin' AND u.role = a.actor_role;
+          SQL
+          )
+          test "$removed" = 1
       - name: Validar cadastro de tenants no piloto
         shell: bash
         run: |

@@ -275,6 +275,8 @@ As alterações são feitas no PostgreSQL do piloto, com auditoria e verificaç�
 
 Operadores e administradores podem cadastrar itens no tenant selecionado. **Categorias** usa a configuração de escrita de ativos. **Concessões** e **Tipos de localidade** usam a configuração de escrita de sites. O PostgreSQL confere o tenant ativo, impede códigos duplicados dentro do tenant e audita os cadastros. Os novos itens ficam disponíveis ao abrir os formulários de ativos e sites. A consulta permanece disponível quando a escrita está desabilitada.
 
+A partir da migração 021, administradores podem usar **Excluir** na aba **Concessões**, com a escrita de sites habilitada. A confirmação informa que os sites vinculados serão desvinculados. A exclusão, a limpeza do vínculo e o registro de auditoria acontecem na mesma transação. Para retirar a operação do navegador, desabilite a escrita de sites e recrie o Web.
+
 #### Enlaces entre ativos no piloto
 
 Abra **Topologia** para consultar os enlaces do tenant ativo. Com a escrita de ativos habilitada, use **Novo enlace** para selecionar origem e destino, informar o tipo e, opcionalmente, o provedor, a capacidade em Mbps e a redundância. A remoção requer confirmação no navegador. O PostgreSQL bloqueia ciclos e vínculos entre tenants, audita as inclusões e remoções e mantém os ativos vinculados. Para deixar a aba em modo de consulta, desabilite a flag de escrita de ativos e recrie o Web.
