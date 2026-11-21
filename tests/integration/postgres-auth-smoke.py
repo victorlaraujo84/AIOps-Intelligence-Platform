@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from threading import Barrier
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -457,6 +458,58 @@ def check_site_location(operator, operator_b):
     assert status == 200 and changed in page["items"]
 
 
+def check_site_map(operator, operator_b):
+    sites = "inventory/sites"
+
+    def viewport(west, south, east, north, *, token=operator, **params):
+        query = urlencode(dict(west=west, south=south, east=east, north=north, **params))
+        return request(f"{sites}/map?{query}", token=token)
+
+    def verify_site(code, latitude, longitude, *, token=operator):
+        status, site, _ = request(sites, data={"code": code, "name": code, "address": "Endereço de teste"}, token=token)
+        assert status == 201
+        status, _, _ = request(
+            f"{sites}/{site['id']}/verify-coords",
+            data={"latitude": latitude, "longitude": longitude},
+            token=token,
+            method="PATCH",
+        )
+        assert status == 200
+        return site["id"]
+
+    assert viewport(-47, -24, -46, -23, token=None)[0] == 401
+    assert request(f"{sites}/map", token=operator)[0] == 422
+    for box in ((-47, -24, -47, -23), (-47, -23, -46, -24), (180, -24, -180, -23),
+                (-181, -24, -46, -23), (-47, -24, -46, 91), (float("nan"), -24, -46, -23)):
+        assert viewport(*box)[0] == 422
+    assert viewport(-47, -24, -46, -23, limit=501)[0] == 422
+
+    foreign = verify_site("MAP-FOREIGN", -23.5, -46.5, token=operator_b)
+    status, local, headers = viewport(-46.5, -23.5, -46, -23)
+    assert status == 200 and headers["Cache-Control"] == "no-store"
+    assert [item["code"] for item in local["items"]] == ["MAP-SITE"]
+    assert local["items"][0]["longitude"] == -46.5 and local["items"][0]["latitude"] == -23.5
+    assert "address" not in local["items"][0]
+    assert viewport(-46.499999999, -23.5, -46, -23)[:2] == (200, {"items": [], "next_after": None})
+    status, other, _ = viewport(-47, -24, -46, -23, token=operator_b)
+    assert status == 200 and [item["id"] for item in other["items"]] == [foreign]
+
+    east = verify_site("MAP-EAST", 1, 179.5)
+    west = verify_site("MAP-WEST", -1, -179.5)
+    dateline = verify_site("MAP-DATELINE", 0, -180)
+    status, first, _ = viewport(179, -2, -179, 2, limit=2)
+    assert status == 200 and len(first["items"]) == 2 and first["next_after"]
+    status, second, _ = viewport(179, -2, -179, 2, limit=2, after=first["next_after"])
+    assert status == 200 and len(second["items"]) == 1 and second["next_after"] is None
+    assert {item["id"] for item in first["items"] + second["items"]} == {east, west, dateline}
+
+    status, edge, _ = viewport(179, -2, 180, 2)
+    assert status == 200 and {item["id"] for item in edge["items"]} == {east, dateline}
+    status, world, _ = viewport(-180, -90, 180, 90)
+    assert status == 200
+    assert {item["code"] for item in world["items"]} == {"MAP-SITE", "MAP-EAST", "MAP-WEST", "MAP-DATELINE"}
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -519,12 +572,13 @@ def main():
     check_asset_categories(operator_token, operator_b_token)
     check_site_catalog(operator_token, operator_b_token)
     check_site_location(operator_token, operator_b_token)
+    check_site_map(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, inventário, catálogos, georreferenciamento, dependências, topologia e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, inventário, catálogos, georreferenciamento, mapa, dependências, topologia e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":
