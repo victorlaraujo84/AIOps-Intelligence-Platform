@@ -31,7 +31,9 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.status, 302);
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
-  assert.deepEqual(await (await imported('/status')).json(), { enabled: true, pilot_only: true, site_writes: false });
+  assert.deepEqual(await (await imported('/status')).json(), {
+    enabled: true, pilot_only: true, site_writes: false, asset_writes: false,
+  });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
     data: { email: 'operator@example.invalid', password: 'operator-fixture-only' },
@@ -138,6 +140,72 @@ if (process.argv.includes('--site-writes')) {
     assert.equal((await session('/logout', { data: {} })).status, 204);
   }
   console.log('Cadastro, edição e coordenadas no mapa verificados com proteção por tenant.');
+  process.exit(0);
+}
+
+if (process.argv.includes('--asset-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const admin = client();
+  const path = '/inventory/assets';
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, email, password) => session('/login', { data: { email, password } });
+  assert.equal((await (await a('/status')).json()).asset_writes, true);
+  assert.equal((await a(path, { data: {}, headers: scope(tenantA) })).status, 401);
+  assert.equal((await login(a, 'operator-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(b, 'operator-b-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(viewer, 'viewer-auth@example.invalid', 'viewer-ci-fixture-only')).status, 204);
+  const read = async (session, route) => (await (await session(route)).json()).items;
+  const siteA = (await read(a, '/inventory/sites')).find(site => site.code === 'a-1');
+  const siteB = (await read(b, '/inventory/sites')).find(site => site.code === 'b-1');
+  const categories = await read(a, '/inventory/asset-categories');
+  const category = categories.find(item => item.code === 'link__ptico');
+  const nextCategory = categories.find(item => item.code === 'sensor');
+  const foreignCategory = (await read(b, '/inventory/asset-categories'))[0];
+  const payload = {
+    name: 'Ativo físico do piloto', hostname: 'fixture-pilot', georeference_mode: 'required',
+    site_id: siteA.id, category_id: category.id,
+  };
+  assert.equal((await a(path, { data: payload })).status, 422);
+  assert.equal((await viewer(path, { data: payload, headers: scope(tenantA) })).status, 403);
+  for (const changes of [{ site_id: null }, { site_id: siteB.id }, { category_id: foreignCategory.id }]) {
+    assert.equal((await a(path, { data: { ...payload, ...changes }, headers: scope(tenantA) })).status, 422);
+  }
+  const created = await a(path, { data: payload, headers: scope(tenantA) });
+  assert.equal(created.status, 201);
+  const asset = await created.json();
+  assert.equal(asset.tenant_id, tenantA);
+  assert.equal(asset.asset_type_code, category.code);
+  assert.equal(asset.domain, category.domain);
+  assert.equal(asset.operational_state, 'NO_DATA');
+  const patch = (session, tenant, data) => session(path + '/' + asset.id, {
+    method: 'PATCH', data, headers: scope(tenant),
+  });
+  assert.equal((await patch(b, tenantB, { name: 'Outro tenant' })).status, 404);
+  assert.equal((await patch(viewer, tenantA, { name: 'Leitor' })).status, 403);
+  const updated = await patch(a, tenantA, {
+    name: 'Ativo do piloto atualizado', site_id: null, georeference_mode: 'none', category_id: nextCategory.id,
+  });
+  assert.equal(updated.status, 200);
+  const changed = await updated.json();
+  assert.equal(changed.site_id, null);
+  assert.equal(changed.georeference_mode, 'none');
+  assert.equal(changed.asset_type_code, nextCategory.code);
+  assert.equal(changed.domain, nextCategory.domain);
+  assert.equal((await a(path, {
+    data: { name: 'Ativo lógico do piloto', georeference_mode: 'none' }, headers: scope(tenantA),
+  })).status, 201);
+  assert.equal((await login(admin, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
+  assert.equal((await admin('/switch-tenant', { data: { tenant_id: tenantA } })).status, 200);
+  assert.equal((await admin('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await admin(path, { data: { name: 'Ativo em aba desatualizada' }, headers: scope(tenantA) })).status, 409);
+  assert.ok(!(await read(b, path)).some(item => item.id === asset.id || item.name === 'Ativo em aba desatualizada'));
+  assert.ok((await read(a, path)).some(item => item.id === asset.id && item.name === changed.name));
+  for (const session of [a, b, viewer, admin]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Cadastro e edição de ativos verificados por HTTPS com vínculos, georreferenciamento e isolamento por tenant.');
   process.exit(0);
 }
 
