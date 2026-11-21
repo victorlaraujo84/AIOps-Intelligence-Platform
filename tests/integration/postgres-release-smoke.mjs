@@ -56,6 +56,9 @@ if (imported) {
     assert.deepEqual([flags.site_writes, flags.asset_writes, flags.service_writes, flags.user_admin, flags.tenant_creation, flags.incident_writes, flags.connector_writes],
       [false, false, false, false, false, false, false]);
     await request(root + '/inventory/connectors', 404, { name: 'Bloqueado' });
+    const ingest = root + '/inventory/connectors/' + connectors.items[0].id + '/ingest';
+    await request(ingest + '/metrics', 404, { metrics: [] });
+    await request(ingest + '/logs', 404, { logs: [] });
     await request(root + '/inventory/sites', 404, { code: 'BLOCKED', name: 'Bloqueado' });
     await request(reviewPath, 404, { expected_review: detail.incident.human_reviewed_at_utc, status: 'OPEN' }, 'PATCH');
     assert.ok(detail.incident.resolved_at_utc);
