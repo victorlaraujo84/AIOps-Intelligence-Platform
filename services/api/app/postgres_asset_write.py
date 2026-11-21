@@ -31,6 +31,8 @@ SELECT pg_has_role(current_user, 'aiops_asset_writer', 'SET')
     OR has_any_column_privilege(current_user, 'public.sites', 'SELECT, INSERT, UPDATE, REFERENCES')
     OR has_any_column_privilege(current_user, 'public.assets', 'SELECT, INSERT, UPDATE, REFERENCES')
     OR has_table_privilege(current_user, 'public.assets', 'DELETE, TRUNCATE, TRIGGER')
+    OR has_any_column_privilege(current_user, 'public.topology_edges', 'SELECT, INSERT, UPDATE, REFERENCES')
+    OR has_table_privilege(current_user, 'public.topology_edges', 'DELETE, TRUNCATE, TRIGGER')
     OR has_any_column_privilege(current_user, 'public.audit_logs', 'SELECT, INSERT, UPDATE, REFERENCES')
   )
 FROM pg_roles r WHERE r.rolname = current_user

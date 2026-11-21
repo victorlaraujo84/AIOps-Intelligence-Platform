@@ -170,6 +170,17 @@ A migração 012 amplia o papel de serviços para gerenciar vínculos entre um s
 
 O banco verifica os vínculos com chaves estrangeiras compostas por tenant. A API serializa a inclusão de vínculos upstream por tenant para impedir ciclos em requisições simultâneas. Cadastro e remoção registram auditoria na transação. O DSN de escrita de serviços controla ambas as operações.
 
+### Topologia de ativos
+
+A migração 013 amplia o papel de escrita de ativos para gerenciar os enlaces no perfil interno `core`. A API usa os DSNs de leitura do inventário e de escrita de ativos.
+
+- `GET /api/v1/inventory/topology/edges` lista enlaces com nomes dos ativos e IDs dos sites.
+- `GET /api/v1/inventory/topology/shared-upstream` lista ativos de origem que atendem pelo menos dois destinos distintos. Enlaces paralelos para o mesmo destino contam uma vez.
+- `POST /api/v1/inventory/topology/edges` cria um enlace direcionado com ativos de origem e destino e tipo. Aceita operadora, capacidade em Mbps e indicação de redundância.
+- `DELETE /api/v1/inventory/topology/edges/{id}` remove o enlace indicado.
+
+As listagens aceitam `limit` e `after`. O PostgreSQL restringe vínculos ao mesmo tenant e impede duplicatas de origem, destino e tipo. A API bloqueia ciclos e registra a criação e remoção na mesma transação que a auditoria. Remover o DSN de escrita de ativos desativa as gravações cadastrais e topológicas.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

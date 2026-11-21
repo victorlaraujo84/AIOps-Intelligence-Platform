@@ -52,6 +52,8 @@ async def inventory_write_transaction(
         if isinstance(error, asyncpg.ForeignKeyViolationError) and error.constraint_name == "assets_site_id_fkey":
             raise HTTPException(422, "Site informado indisponível neste tenant.", headers=AUTH_HEADERS) from None
         if isinstance(error, asyncpg.ForeignKeyViolationError):
+            if error.constraint_name in {"topology_edges_source_asset_id_fkey", "topology_edges_target_asset_id_fkey"}:
+                raise HTTPException(422, "Ativo do enlace indisponível neste tenant.", headers=AUTH_HEADERS) from None
             if error.constraint_name == "service_dependencies_service_id_fkey":
                 raise HTTPException(404, "Serviço não encontrado.", headers=AUTH_HEADERS) from None
             if error.constraint_name in {"service_dependencies_asset_id_fkey", "service_dependencies_upstream_service_id_fkey"}:
@@ -59,9 +61,20 @@ async def inventory_write_transaction(
         raise HTTPException(503, f"Gravação de {resource_label} temporariamente indisponível.", headers=AUTH_HEADERS) from None
 
 
+async def lock_inventory_graph(
+    connection: asyncpg.Connection, tenant: UUID, graph: Literal["service_dependencies", "topology"],
+):
+    # A consulta seguinte enxerga as arestas confirmadas pela transação anterior.
+    lock_namespace = {"service_dependencies": 12012, "topology": 12013}[graph]
+    await connection.execute(
+        "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, $2))",
+        str(tenant), lock_namespace,
+    )
+
+
 async def audit_inventory_write(
     connection: asyncpg.Connection, tenant: UUID, identity: asyncpg.Record,
-    action: str, resource: Literal["site", "asset", "service", "service_dependency"], resource_id: UUID,
+    action: str, resource: Literal["site", "asset", "service", "service_dependency", "topology_edge"], resource_id: UUID,
 ):
     await connection.execute(
         """

@@ -28,7 +28,8 @@ WITH known(version, filename, sha256) AS (
     (9, '009_site_writer.sql', :'site_writer_sha'),
     (10, '010_asset_writer.sql', :'asset_writer_sha'),
     (11, '011_service_writer.sql', :'service_writer_sha'),
-    (12, '012_service_dependencies.sql', :'service_dependencies_sha')
+    (12, '012_service_dependencies.sql', :'service_dependencies_sha'),
+    (13, '013_topology_edges.sql', :'topology_edges_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -46,13 +47,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 9), false) AS has_site_writer,
   COALESCE(bool_or(m.version = 10), false) AS has_asset_writer,
   COALESCE(bool_or(m.version = 11), false) AS has_service_writer,
-  COALESCE(bool_or(m.version = 12), false) AS has_service_dependencies
+  COALESCE(bool_or(m.version = 12), false) AS has_service_dependencies,
+  COALESCE(bool_or(m.version = 13), false) AS has_topology_edges
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_topology_edges
+  \if :has_service_dependencies
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 013 sem versão 012'; END $$;
+  \endif
 \endif
 
 \if :has_service_dependencies
@@ -232,6 +241,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../012_service_dependencies.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (12, '012_service_dependencies.sql', :'service_dependencies_sha');
+\endif
+
+\if :has_topology_edges
+\else
+  \ir ../013_topology_edges.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (13, '013_topology_edges.sql', :'topology_edges_sha');
 \endif
 
 COMMIT;

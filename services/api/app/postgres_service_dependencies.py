@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import get_inventory_pool, inventory_read_transaction
-from .postgres_inventory_write import audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import audit_inventory_write, inventory_write_transaction, lock_inventory_graph
 from .postgres_service_write import ServiceWriteRoute, get_service_write_pool
 
 
@@ -95,8 +95,7 @@ async def create_dependency(
         if body.asset_id is None and body.upstream_service_id is None:
             raise HTTPException(422, "Informe um ativo ou serviço upstream.", headers=AUTH_HEADERS)
         if body.upstream_service_id is not None:
-            # A consulta após o lock enxerga as arestas confirmadas pela transação anterior.
-            await connection.execute("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 12012))", str(tenant))
+            await lock_inventory_graph(connection, tenant, "service_dependencies")
             if await connection.fetchval(WOULD_CREATE_CYCLE, tenant, service_id, body.upstream_service_id):
                 raise HTTPException(409, "A dependência criaria um ciclo entre serviços.", headers=AUTH_HEADERS)
         dependency = await connection.fetchrow(
