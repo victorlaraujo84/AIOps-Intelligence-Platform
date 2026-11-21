@@ -19,10 +19,12 @@ auth=$(sha256sum 007_authenticator.sql)
 selection=$(sha256sum 008_auth_tenant_selection.sql)
 site_writer=$(sha256sum 009_site_writer.sql)
 asset_writer=$(sha256sum 010_asset_writer.sql)
+service_writer=$(sha256sum 011_service_writer.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
   --set="inventory_sha=${inventory%% *}" --set="identity_sha=${identity%% *}" \
   --set="auth_sha=${auth%% *}" --set="selection_sha=${selection%% *}" \
   --set="site_writer_sha=${site_writer%% *}" --set="asset_writer_sha=${asset_writer%% *}" \
+  --set="service_writer_sha=${service_writer%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql

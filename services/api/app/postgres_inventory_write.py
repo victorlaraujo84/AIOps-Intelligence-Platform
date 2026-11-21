@@ -11,15 +11,20 @@ from .postgres_auth import AUTH_HEADERS
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Criticality = Literal["critica", "alta", "media", "baixa"]
+Domain = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1, max_length=80)]
 
 
 @asynccontextmanager
 async def inventory_write_transaction(
     pool: asyncpg.Pool,
     identity: asyncpg.Record,
-    role: Literal["aiops_site_writer", "aiops_asset_writer"],
+    role: Literal["aiops_site_writer", "aiops_asset_writer", "aiops_service_writer"],
 ):
-    resource_label = "sites" if role == "aiops_site_writer" else "ativos"
+    resource_label = {
+        "aiops_site_writer": "sites",
+        "aiops_asset_writer": "ativos",
+        "aiops_service_writer": "serviços",
+    }[role]
     if identity["role"] not in {"super_admin", "tenant_admin", "tenant_operator"}:
         raise HTTPException(403, f"Permissão insuficiente para alterar {resource_label}.", headers=AUTH_HEADERS)
     tenant = identity["active_tenant_id"]
@@ -42,6 +47,8 @@ async def inventory_write_transaction(
     except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as error:
         if isinstance(error, asyncpg.UniqueViolationError) and error.constraint_name == "sites_tenant_id_code_key":
             raise HTTPException(409, "Já existe um site com este código neste tenant.", headers=AUTH_HEADERS) from None
+        if isinstance(error, asyncpg.UniqueViolationError) and error.constraint_name == "services_tenant_id_code_key":
+            raise HTTPException(409, "Já existe um serviço com este código neste tenant.", headers=AUTH_HEADERS) from None
         if isinstance(error, asyncpg.ForeignKeyViolationError) and error.constraint_name == "assets_site_id_fkey":
             raise HTTPException(422, "Site informado indisponível neste tenant.", headers=AUTH_HEADERS) from None
         raise HTTPException(503, f"Gravação de {resource_label} temporariamente indisponível.", headers=AUTH_HEADERS) from None
@@ -49,7 +56,7 @@ async def inventory_write_transaction(
 
 async def audit_inventory_write(
     connection: asyncpg.Connection, tenant: UUID, identity: asyncpg.Record,
-    action: str, resource: Literal["site", "asset"], resource_id: UUID,
+    action: str, resource: Literal["site", "asset", "service"], resource_id: UUID,
 ):
     await connection.execute(
         """

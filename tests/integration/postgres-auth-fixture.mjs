@@ -17,6 +17,8 @@ CREATE ROLE aiops_site_write_ci LOGIN NOINHERIT PASSWORD 'site-write-ci-fixture-
 GRANT aiops_site_writer TO aiops_site_write_ci WITH SET TRUE;
 CREATE ROLE aiops_asset_write_ci LOGIN NOINHERIT PASSWORD 'asset-write-ci-fixture-only';
 GRANT aiops_asset_writer TO aiops_asset_write_ci WITH SET TRUE;
+CREATE ROLE aiops_service_write_ci LOGIN NOINHERIT PASSWORD 'service-write-ci-fixture-only';
+GRANT aiops_service_writer TO aiops_service_write_ci WITH SET TRUE;
 INSERT INTO tenants (id, name, slug, status) VALUES
   ('${active}', 'Auth CI', 'auth-ci', 'active'),
   ('${suspended}', 'Auth CI suspenso', 'auth-ci-suspended', 'suspended'),

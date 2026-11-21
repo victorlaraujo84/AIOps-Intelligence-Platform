@@ -108,6 +108,52 @@ def check_asset_write(operator, operator_b):
     assert request("auth/logout", data={}, token=viewer)[0] == 204
 
 
+def check_service_write(operator, operator_b):
+    path = "inventory/services"
+    payload = {
+        "code": " runtime service ",
+        "name": "Serviço Runtime",
+        "owner_team": "Operações",
+        "sla_target_pct": 99.9,
+        "description": "Serviço cadastrado no smoke",
+    }
+    for invalid in (-0.1, 100.1, True, "99", float("inf"), float("nan")):
+        assert request(path, data={**payload, "sla_target_pct": invalid}, token=operator)[0] == 422
+    assert request(path, data={**payload, "tenant_id": TENANT_B}, token=operator)[0] == 422
+    assert request(path, data={**payload, "operational_state": "UP"}, token=operator)[0] == 422
+
+    status, service, headers = request(path, data=payload, token=operator)
+    assert status == 201 and headers["Cache-Control"] == "no-store", (status, service)
+    assert service["tenant_id"] == TENANT_A and service["code"] == "RUNTIME_SERVICE"
+    assert service["domain"] == "ti" and service["criticality"] == "alta"
+    assert service["operational_state"] == "NO_DATA" and service["sla_target_pct"] == 99.9
+    assert request(path, data={**payload, "code": "RUNTIME_SERVICE"}, token=operator)[0] == 409
+
+    status, other, _ = request(path, data={**payload, "sla_target_pct": 100}, token=operator_b)
+    assert status == 201 and other["tenant_id"] == TENANT_B and other["sla_target_pct"] == 100
+    url = f"{path}/{service['id']}"
+    assert request(url, data={"name": "Outro tenant"}, token=operator_b, method="PATCH")[0] == 404
+    assert request(url, data={"code": "NOVO"}, token=operator, method="PATCH")[0] == 422
+    assert request(url, data={"criticality": None}, token=operator, method="PATCH")[0] == 422
+    status, updated, _ = request(
+        url,
+        data={"owner_team": None, "sla_target_pct": None, "description": None, "domain": " INFRA "},
+        token=operator,
+        method="PATCH",
+    )
+    assert status == 200 and updated["domain"] == "infra" and updated["code"] == service["code"]
+    assert all(updated[field] is None for field in ("owner_team", "sla_target_pct", "description"))
+    status, page, _ = request(path, token=operator)
+    assert status == 200 and updated in page["items"]
+    assert all(row["tenant_id"] == TENANT_A for row in page["items"])
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request(path, data=payload, token=viewer)[0] == 403
+    assert request(url, data={"name": "Leitor"}, token=viewer, method="PATCH")[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -164,12 +210,13 @@ def main():
 
     check_site_write(operator_token, operator_b_token)
     check_asset_write(operator_token, operator_b_token)
+    check_service_write(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, gravação de sites e ativos e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, gravação de sites, ativos e serviços, e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":
