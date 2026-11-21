@@ -187,6 +187,12 @@ A migração 014 habilita o catálogo de categorias no perfil interno `core`. Us
 
 O cadastro e a edição de ativos aceitam `category_id` do mesmo tenant. Ao atribuir uma categoria, a API copia seu código para `asset_type_code` e usa o domínio da categoria quando o corpo omite `domain`. Para desvincular, envie `category_id: null` no `PATCH`. Isso limpa o código do vínculo e preserva o domínio cadastrado, a menos que o corpo forneça outro domínio. Um ativo sem categoria conserva seu código de tipo legado.
 
+### Concessões e tipos de localidade
+
+A migração 015 habilita o catálogo geográfico no perfil interno `core`. Use `GET /api/v1/inventory/concessions` e `GET /api/v1/inventory/locality-types` com o DSN de leitura. As duas rotas aceitam `limit` e `after`. Use `POST` nas mesmas rotas com o DSN de escrita de sites. Concessões recebem código, nome e, opcionalmente, região e descrição. Tipos de localidade recebem código, rótulo e descrição opcional.
+
+O cadastro e a edição de sites aceitam `concession_id` e `locality_type_id` do mesmo tenant. Envie `null` em um campo no `PATCH` para remover o vínculo correspondente. O cadastro dos catálogos e as alterações de vínculo são auditados na mesma transação.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

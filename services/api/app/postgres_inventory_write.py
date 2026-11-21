@@ -52,6 +52,10 @@ async def inventory_write_transaction(
         if isinstance(error, asyncpg.ForeignKeyViolationError) and error.constraint_name == "assets_site_id_fkey":
             raise HTTPException(422, "Site informado indisponível neste tenant.", headers=AUTH_HEADERS) from None
         if isinstance(error, asyncpg.ForeignKeyViolationError):
+            if error.constraint_name == "sites_concession_id_fkey":
+                raise HTTPException(422, "Concessão indisponível neste tenant.", headers=AUTH_HEADERS) from None
+            if error.constraint_name == "sites_locality_type_id_fkey":
+                raise HTTPException(422, "Tipo de localidade indisponível neste tenant.", headers=AUTH_HEADERS) from None
             if error.constraint_name == "assets_category_id_fkey":
                 raise HTTPException(422, "Categoria indisponível neste tenant.", headers=AUTH_HEADERS) from None
             if error.constraint_name in {"topology_edges_source_asset_id_fkey", "topology_edges_target_asset_id_fkey"}:
@@ -76,7 +80,7 @@ async def lock_inventory_graph(
 
 async def audit_inventory_write(
     connection: asyncpg.Connection, tenant: UUID, identity: asyncpg.Record,
-    action: str, resource: Literal["site", "asset", "service", "service_dependency", "topology_edge", "asset_category"], resource_id: UUID,
+    action: str, resource: Literal["site", "asset", "service", "service_dependency", "topology_edge", "asset_category", "concession", "locality_type"], resource_id: UUID,
 ):
     await connection.execute(
         """

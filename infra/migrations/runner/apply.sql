@@ -30,7 +30,8 @@ WITH known(version, filename, sha256) AS (
     (11, '011_service_writer.sql', :'service_writer_sha'),
     (12, '012_service_dependencies.sql', :'service_dependencies_sha'),
     (13, '013_topology_edges.sql', :'topology_edges_sha'),
-    (14, '014_asset_categories.sql', :'asset_categories_sha')
+    (14, '014_asset_categories.sql', :'asset_categories_sha'),
+    (15, '015_site_catalog.sql', :'site_catalog_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -50,13 +51,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 11), false) AS has_service_writer,
   COALESCE(bool_or(m.version = 12), false) AS has_service_dependencies,
   COALESCE(bool_or(m.version = 13), false) AS has_topology_edges,
-  COALESCE(bool_or(m.version = 14), false) AS has_asset_categories
+  COALESCE(bool_or(m.version = 14), false) AS has_asset_categories,
+  COALESCE(bool_or(m.version = 15), false) AS has_site_catalog
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_site_catalog
+  \if :has_asset_categories
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 015 sem versão 014'; END $$;
+  \endif
 \endif
 
 \if :has_asset_categories
@@ -264,6 +273,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../014_asset_categories.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (14, '014_asset_categories.sql', :'asset_categories_sha');
+\endif
+
+\if :has_site_catalog
+\else
+  \ir ../015_site_catalog.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (15, '015_site_catalog.sql', :'site_catalog_sha');
 \endif
 
 COMMIT;

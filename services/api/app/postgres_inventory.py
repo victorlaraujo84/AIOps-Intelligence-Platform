@@ -9,11 +9,13 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 
 
-Resource = Literal["sites", "assets", "services", "asset-categories"]
+Resource = Literal["sites", "assets", "services", "asset-categories", "concessions", "locality-types"]
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 COLUMNS = {
     "asset-categories": "id, tenant_id, code, label, domain, created_at_utc",
-    "sites": "id, tenant_id, code, name, municipality, uf, latitude, longitude, coord_verified, criticality",
+    "concessions": "id, tenant_id, code, name, region, description, created_at_utc",
+    "locality-types": "id, tenant_id, code, label, description, created_at_utc",
+    "sites": "id, tenant_id, concession_id, locality_type_id, code, name, municipality, uf, latitude, longitude, coord_verified, criticality",
     "assets": "id, tenant_id, site_id, category_id, name, hostname, domain, georeference_mode, asset_type_code, criticality, operational_state",
     "services": "id, tenant_id, code, name, domain, criticality, owner_team, sla_target_pct, operational_state, description",
 }
@@ -29,6 +31,8 @@ SELECT pg_has_role(current_user, 'aiops_tenant_reader', 'SET')
     OR has_any_column_privilege(current_user, 'public.users', 'SELECT')
     OR has_any_column_privilege(current_user, 'public.sessions', 'SELECT')
     OR has_any_column_privilege(current_user, 'public.sites', 'SELECT')
+    OR has_any_column_privilege(current_user, 'public.concessions', 'SELECT')
+    OR has_any_column_privilege(current_user, 'public.locality_types', 'SELECT')
     OR has_any_column_privilege(current_user, 'public.assets', 'SELECT')
     OR has_any_column_privilege(current_user, 'public.asset_categories', 'SELECT')
     OR has_any_column_privilege(current_user, 'public.services', 'SELECT')
