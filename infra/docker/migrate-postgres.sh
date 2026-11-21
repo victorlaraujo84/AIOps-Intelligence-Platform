@@ -36,6 +36,7 @@ service_delete=$(sha256sum 024_service_delete.sql)
 operational_history=$(sha256sum 025_legacy_operational_history.sql)
 asset_identification=$(sha256sum 026_asset_identification.sql)
 incident_review=$(sha256sum 027_incident_review.sql)
+incident_outbox=$(sha256sum 028_incident_outbox.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -58,4 +59,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="operational_history_sha=${operational_history%% *}" \
   --set="asset_identification_sha=${asset_identification%% *}" \
   --set="incident_review_sha=${incident_review%% *}" \
+  --set="incident_outbox_sha=${incident_outbox%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql
