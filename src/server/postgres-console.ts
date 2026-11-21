@@ -204,6 +204,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.post('/inventory/locality-types', writeInventory('locality-types'));
     router.post('/inventory/sites', writeInventory('sites'));
     router.patch('/inventory/sites/:id', writeInventory('sites'));
+    router.delete('/inventory/sites/:id', writeInventory('sites'));
     router.patch('/inventory/sites/:id/verify-coords', writeInventory('sites', '/verify-coords'));
   }
   if (assetWrites) {

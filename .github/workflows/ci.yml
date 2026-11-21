@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21
+            test "$history" = 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -313,6 +313,42 @@ jobs:
           SQL
           )
           test "$removed" = 1
+      - name: Validar exclusão de sites no piloto
+        shell: bash
+        run: |
+          docker compose --profile core exec -T postgres sh -ec '
+            exec psql -Xq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          BEGIN;
+          INSERT INTO sites (tenant_id, code, name)
+          VALUES ('00000000-0000-4000-b000-000000000001', 'SITE-DELETE-CHECK', 'Site de teste de exclusão')
+          RETURNING id AS site_id, tenant_id \gset
+          INSERT INTO canonical_events (tenant_id, site_id, idempotency_key, event_time_utc, observed_at_utc, source, event_type, status)
+          VALUES (:'tenant_id', :'site_id', 'site-delete-ci', now(), now(), 'CI', 'test', 'OPEN');
+          INSERT INTO incidents (tenant_id, root_site_id, title, opened_at_utc)
+          VALUES (:'tenant_id', :'site_id', 'site-delete-ci', now());
+          INSERT INTO metric_samples (tenant_id, site_id, idempotency_key, metric_name, value_num, unit, observed_at_utc, source)
+          VALUES (:'tenant_id', :'site_id', 'site-delete-ci', 'test.metric', 1, 'count', now(), 'CI');
+          INSERT INTO operational_logs (tenant_id, site_id, idempotency_key, message, observed_at_utc, source)
+          VALUES (:'tenant_id', :'site_id', 'site-delete-ci', 'Fixture de teste', now(), 'CI');
+          COMMIT;
+          SQL
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --site-delete
+          result=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT
+            (SELECT count(*) FROM canonical_events WHERE idempotency_key = 'site-delete-ci' AND site_id IS NULL),
+            (SELECT count(*) FROM incidents WHERE title = 'site-delete-ci' AND root_site_id IS NULL),
+            (SELECT count(*) FROM metric_samples WHERE idempotency_key = 'site-delete-ci' AND site_id IS NULL),
+            (SELECT count(*) FROM operational_logs WHERE idempotency_key = 'site-delete-ci' AND site_id IS NULL),
+            (SELECT count(*) FROM audit_logs a JOIN users u ON u.id = a.actor_user_id AND u.tenant_id = a.tenant_id
+             WHERE a.action = 'SITE_DELETED' AND a.resource_type = 'site' AND a.actor_role = u.role
+               AND a.actor_role = 'tenant_admin');
+          SQL
+          )
+          test "$result" = '1|1|1|1|1'
       - name: Validar cadastro de tenants no piloto
         shell: bash
         run: |
