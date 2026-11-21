@@ -20,7 +20,8 @@ WITH known(version, filename, sha256) AS (
     (1, '001_initial_schema.sql', :'initial_sha'),
     (2, '002_hybrid_observability.sql', :'hybrid_sha'),
     (3, '003_tenant_reader.sql', :'reader_sha'),
-    (4, '004_tenant_links.sql', :'links_sha')
+    (4, '004_tenant_links.sql', :'links_sha'),
+    (5, '005_inventory_parity.sql', :'inventory_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -30,13 +31,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 1), false) AS has_initial,
   COALESCE(bool_or(m.version = 2), false) AS has_hybrid,
   COALESCE(bool_or(m.version = 3), false) AS has_reader,
-  COALESCE(bool_or(m.version = 4), false) AS has_links
+  COALESCE(bool_or(m.version = 4), false) AS has_links,
+  COALESCE(bool_or(m.version = 5), false) AS has_inventory
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_inventory
+  \if :has_links
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 005 sem versão 004'; END $$;
+  \endif
 \endif
 
 \if :has_links
@@ -104,6 +113,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../004_tenant_links.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (4, '004_tenant_links.sql', :'links_sha');
+\endif
+
+\if :has_inventory
+\else
+  \ir ../005_inventory_parity.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (5, '005_inventory_parity.sql', :'inventory_sha');
 \endif
 
 COMMIT;
