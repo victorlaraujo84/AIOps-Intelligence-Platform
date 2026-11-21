@@ -192,12 +192,15 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
       }
       const base = '/inventory/' + resource;
       const path = id ? base + '/' + id + suffix : base;
-      forward(res, await callCore(path, token, req.body ?? {}, expected, id ? 'PATCH' : undefined));
+      const removing = req.method === 'DELETE';
+      forward(res, await callCore(path, token, removing ? undefined : req.body ?? {}, expected,
+        removing ? 'DELETE' : id ? 'PATCH' : undefined));
     };
   }
 
   if (siteWrites) {
     router.post('/inventory/concessions', writeInventory('concessions'));
+    router.delete('/inventory/concessions/:id', writeInventory('concessions'));
     router.post('/inventory/locality-types', writeInventory('locality-types'));
     router.post('/inventory/sites', writeInventory('sites'));
     router.patch('/inventory/sites/:id', writeInventory('sites'));

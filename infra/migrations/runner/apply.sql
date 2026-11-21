@@ -36,7 +36,8 @@ WITH known(version, filename, sha256) AS (
     (17, '017_site_map_index.sql', :'site_map_sha'),
     (18, '018_auth_tenant_list.sql', :'tenant_list_sha'),
     (19, '019_tenant_user_admin.sql', :'tenant_user_admin_sha'),
-    (20, '020_create_tenant.sql', :'create_tenant_sha')
+    (20, '020_create_tenant.sql', :'create_tenant_sha'),
+    (21, '021_concession_delete.sql', :'concession_delete_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -62,13 +63,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 17), false) AS has_site_map,
   COALESCE(bool_or(m.version = 18), false) AS has_tenant_list,
   COALESCE(bool_or(m.version = 19), false) AS has_tenant_user_admin,
-  COALESCE(bool_or(m.version = 20), false) AS has_create_tenant
+  COALESCE(bool_or(m.version = 20), false) AS has_create_tenant,
+  COALESCE(bool_or(m.version = 21), false) AS has_concession_delete
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_concession_delete
+  \if :has_create_tenant
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 021 sem versão 020'; END $$;
+  \endif
 \endif
 
 \if :has_create_tenant
@@ -360,6 +369,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../020_create_tenant.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (20, '020_create_tenant.sql', :'create_tenant_sha');
+\endif
+
+\if :has_concession_delete
+\else
+  \ir ../021_concession_delete.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (21, '021_concession_delete.sql', :'concession_delete_sha');
 \endif
 
 COMMIT;

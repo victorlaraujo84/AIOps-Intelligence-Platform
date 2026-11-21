@@ -114,14 +114,16 @@ function TenantSelector({ active, busy, onSwitch }: {
   );
 }
 
-function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies }: {
+function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRemove, removalDisabled }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
   onVerify?: (row: Row) => void;
   onDependencies?: (row: Row) => void;
+  onRemove?: (row: Row) => void;
+  removalDisabled?: boolean;
 }) {
-  const hasActions = Boolean(onEdit || onVerify || onDependencies);
+  const hasActions = Boolean(onEdit || onVerify || onDependencies || onRemove);
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm">
@@ -141,6 +143,8 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies }: {
                   onClick={() => onVerify(row)}>Verificar coordenadas</button>}
                 {onDependencies && <button type="button" className={button} aria-label={'Dependências de ' + row.name}
                   onClick={() => onDependencies(row)}>Dependências</button>}
+                {onRemove && <button type="button" className={button} aria-label={'Excluir concessão ' + row.name}
+                  disabled={removalDisabled} onClick={() => onRemove(row)}>Excluir</button>}
               </div>
             </td>}
           </tr>)}
@@ -423,7 +427,11 @@ export default function PostgresConsole() {
                 ) : isWritableCatalog(resource.id) ? (
                   <PostgresCatalogCreate<Row> key={resource.id} catalog={resource.id} tenant={identity.active_tenant_id}
                     mayWrite={mayWrite && (resource.id === 'asset-categories' ? assetWrites : siteWrites)}
-                    render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
+                    mayRemove={resource.id === 'concessions' && siteWrites
+                      && (identity.role === 'tenant_admin' || identity.role === 'super_admin')}
+                    render={(rows, onRemove, disabled) => (
+                      <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} />
+                    )} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />
                 ) : resource.id === 'topology' ? (

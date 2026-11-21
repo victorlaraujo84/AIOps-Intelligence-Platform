@@ -596,6 +596,73 @@ if (process.argv.includes('--catalog-writes')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--concession-delete')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const operator = client();
+  const global = client();
+  const login = (session, name, password) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const path = '/inventory/concessions';
+  const create = async (session, tenant, path, data) => {
+    const response = await session(path, { data, headers: scope(tenant) });
+    assert.equal(response.status, 201);
+    return response.json();
+  };
+  const list = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return (await response.json()).items;
+  };
+  assert.equal((await login(a, 'admin', 'admin')).status, 204);
+  assert.equal((await login(b, 'admin-b', 'admin')).status, 204);
+  assert.equal((await login(operator, 'operator', 'operator')).status, 204);
+  assert.equal((await login(viewer, 'viewer', 'viewer')).status, 204);
+  assert.equal((await login(global, 'global', 'global')).status, 204);
+
+  const data = { code: 'CONCESSION-DELETE', name: 'Concessão para excluir' };
+  const concession = await create(a, tenantA, path, data);
+  const other = await create(b, tenantB, path, data);
+  const type = await create(a, tenantA, '/inventory/locality-types', { code: 'DELETE_LINK', label: 'Localidade do vínculo' });
+  const site = await create(a, tenantA, '/inventory/sites', {
+    code: 'CONCESSION-DELETE-SITE', name: 'Site permanece', concession_id: concession.id, locality_type_id: type.id,
+  });
+  const otherSite = await create(b, tenantB, '/inventory/sites', {
+    code: 'CONCESSION-DELETE-SITE', name: 'Site outro tenant', concession_id: other.id,
+  });
+  const before = (await list(viewer, '/inventory/sites')).find(row => row.id === site.id);
+  assert.equal(before.concession_id, concession.id);
+  assert.equal(before.locality_type_id, type.id);
+  const remove = (session, headers) => session(path + '/' + concession.id, { method: 'DELETE', data: {}, headers });
+
+  assert.equal((await remove(client(), scope(tenantA))).status, 401);
+  assert.equal((await remove(a)).status, 422);
+  assert.equal((await remove(a, { ...scope(tenantA), 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await remove(operator, scope(tenantA))).status, 403);
+  assert.equal((await remove(viewer, scope(tenantA))).status, 403);
+  assert.equal((await remove(b, scope(tenantB))).status, 404);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(global, scope(tenantA))).status, 409);
+
+  const results = await Promise.all([remove(a, scope(tenantA)), remove(a, scope(tenantA))]);
+  assert.deepEqual(results.map(response => response.status).sort(), [204, 404]);
+  assert.equal(await results.find(response => response.status === 204).text(), '');
+  assert.ok(!(await list(viewer, path)).some(row => row.id === concession.id));
+  const after = (await list(viewer, '/inventory/sites')).find(row => row.id === site.id);
+  assert.deepEqual(after, { ...before, concession_id: null });
+  assert.ok((await list(b, path)).some(row => row.id === other.id));
+  assert.equal((await list(b, '/inventory/sites')).find(row => row.id === otherSite.id).concession_id, other.id);
+
+  for (const session of [a, b, operator, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Remoção de concessão por HTTPS, RBAC e desvinculação do site verificados.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -630,6 +697,9 @@ assert.equal((await operator('/inventory/connectors')).status, 404);
 for (const resource of ['asset-categories', 'concessions', 'locality-types']) {
   assert.equal((await operator('/inventory/' + resource, { data: {} })).status, 404);
 }
+assert.equal((await operator('/inventory/concessions/' + tenantA, {
+  method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
+})).status, 404);
 assert.equal((await operator('/tenants', { data: { name: 'Fixture' } })).status, 404);
 assert.equal((await operator('/tenant-users', { headers: { 'X-AIOps-Expected-Tenant': tenantA } })).status, 404);
 assert.equal((await operator('/inventory/topology/edges')).status, 200);
