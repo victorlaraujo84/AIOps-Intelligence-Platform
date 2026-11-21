@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { errorMessage, request } from '../lib/postgres-console.ts';
 import { button, CatalogField, field, loadCatalog, type Choice } from './PostgresInventoryFields.tsx';
 
@@ -23,6 +23,33 @@ export function PostgresSiteEditor({ tenant, site, onCancel, onSaved }: {
       .catch(error => { if (!controller.signal.aborted) setCatalogError(errorMessage(error)); });
     return () => controller.abort();
   }, []);
+
+  const form = useRef<HTMLFormElement>(null);
+  const [lookingUp, setLookingUp] = useState(false);
+
+  async function lookupCep() {
+    const cep = form.current?.elements.namedItem('cep');
+    if (!(cep instanceof HTMLInputElement) || !/^\d{5}-?\d{3}$/.test(cep.value)) {
+      setError('Informe um CEP com oito dígitos.');
+      return;
+    }
+    setError('');
+    setLookingUp(true);
+    try {
+      const result = await request<{ address: string; municipality: string; uf: string }>('/geo/cep/' + cep.value, {
+        headers: { 'X-AIOps-Expected-Tenant': tenant },
+      });
+      for (const [name, value] of Object.entries(result)) {
+        if (!['address', 'municipality', 'uf'].includes(name) || !value) continue;
+        const field = form.current?.elements.namedItem(name);
+        if (field instanceof HTMLInputElement) field.value = value;
+      }
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setLookingUp(false);
+    }
+  }
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,9 +82,9 @@ export function PostgresSiteEditor({ tenant, site, onCancel, onSaved }: {
   }
 
   return (
-    <form className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4" onSubmit={save}>
+    <form className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4" onSubmit={save} ref={form}>
       <h3 className="font-semibold">{site ? 'Editar site' : 'Novo site'}</h3>
-      <fieldset disabled={pending} className="grid min-w-0 gap-3 sm:grid-cols-2">
+      <fieldset disabled={pending || lookingUp} className="grid min-w-0 gap-3 sm:grid-cols-2">
         {!site && <label className="space-y-1 text-sm"><span>Código</span>
           <input className={field} name="code" maxLength={64} required />
         </label>}
@@ -70,6 +97,11 @@ export function PostgresSiteEditor({ tenant, site, onCancel, onSaved }: {
         <label className="space-y-1 text-sm"><span>CEP</span>
           <input className={field} name="cep" inputMode="numeric" pattern="[0-9]{5}-?[0-9]{3}" maxLength={9} defaultValue={site?.cep ?? ''} />
         </label>
+        <div className="flex items-end">
+          <button className={button} type="button" onClick={() => void lookupCep()}>
+            {lookingUp ? 'Consultando…' : 'Buscar CEP'}
+          </button>
+        </div>
         <label className="space-y-1 text-sm"><span>Município</span>
           <input className={field} name="municipality" maxLength={200} defaultValue={site?.municipality ?? ''} />
         </label>
@@ -92,8 +124,8 @@ export function PostgresSiteEditor({ tenant, site, onCancel, onSaved }: {
       {catalogError && <p role="alert" className="text-sm text-amber-200">{catalogError}</p>}
       {error && <p role="alert" className="text-sm text-rose-200">{error}</p>}
       <div className="flex gap-2">
-        <button className={button} type="submit" disabled={pending}>{pending ? 'Salvando…' : 'Salvar site'}</button>
-        <button className={button} type="button" disabled={pending} onClick={onCancel}>Cancelar</button>
+        <button className={button} type="submit" disabled={pending || lookingUp}>{pending ? 'Salvando…' : 'Salvar site'}</button>
+        <button className={button} type="button" disabled={pending || lookingUp} onClick={onCancel}>Cancelar</button>
       </div>
     </form>
   );
@@ -107,6 +139,32 @@ export function PostgresSiteCoordinates({ tenant, site, onCancel, onSaved }: {
 }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+
+  const form = useRef<HTMLFormElement>(null);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [suggestion, setSuggestion] = useState('');
+
+  async function suggestCoordinates() {
+    setLookingUp(true);
+    setError('');
+    setSuggestion('');
+    try {
+      const result = await request<{ latitude: number; longitude: number; display_name: string }>('/geo/geocode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-AIOps-Expected-Tenant': tenant },
+        body: JSON.stringify({ address: site.address ?? '', municipality: site.municipality, uf: site.uf }),
+      });
+      for (const name of ['latitude', 'longitude'] as const) {
+        const field = form.current?.elements.namedItem(name);
+        if (field instanceof HTMLInputElement) field.value = String(result[name]);
+      }
+      setSuggestion(result.display_name);
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setLookingUp(false);
+    }
+  }
 
   async function verify(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -134,10 +192,16 @@ export function PostgresSiteCoordinates({ tenant, site, onCancel, onSaved }: {
   }
 
   return (
-    <form className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4" onSubmit={verify}>
+    <form className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4" onSubmit={verify} ref={form}>
       <h3 className="font-semibold">Verificar coordenadas de {site.name}</h3>
       <p className="text-sm text-slate-300">Informe as coordenadas conferidas, em graus decimais.</p>
-      <fieldset disabled={pending} className="grid min-w-0 gap-3 sm:grid-cols-2">
+      {site.municipality && site.uf && (
+        <button className={button} type="button" disabled={pending || lookingUp} onClick={() => void suggestCoordinates()}>
+          {lookingUp ? 'Buscando…' : 'Sugerir pelo endereço'}
+        </button>
+      )}
+      {suggestion && <p role="status" className="text-sm text-slate-300">{suggestion}</p>}
+      <fieldset disabled={pending || lookingUp} className="grid min-w-0 gap-3 sm:grid-cols-2">
         <label className="space-y-1 text-sm"><span>Latitude</span>
           <input className={field} name="latitude" type="number" min={-90} max={90} step="any"
             defaultValue={site.latitude ?? ''} required />
@@ -149,8 +213,8 @@ export function PostgresSiteCoordinates({ tenant, site, onCancel, onSaved }: {
       </fieldset>
       {error && <p role="alert" className="text-sm text-rose-200">{error}</p>}
       <div className="flex gap-2">
-        <button className={button} type="submit" disabled={pending}>{pending ? 'Verificando…' : 'Confirmar coordenadas'}</button>
-        <button className={button} type="button" disabled={pending} onClick={onCancel}>Cancelar</button>
+        <button className={button} type="submit" disabled={pending || lookingUp}>{pending ? 'Verificando…' : 'Confirmar coordenadas'}</button>
+        <button className={button} type="button" disabled={pending || lookingUp} onClick={onCancel}>Cancelar</button>
       </div>
     </form>
   );

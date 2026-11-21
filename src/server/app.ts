@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import type Database from 'better-sqlite3';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import { isTargetAuthorizedInScope, type CollectionProtocol } from './collection.ts';
 import { initializeTenantTaxonomy, openDatabase, writeAuditLog } from './db.ts';
+import { createHttpApp } from './http-app.ts';
 import { postgresConsoleRouter } from './postgres-console.ts';
 import { validateOutboundHttpsUrl } from './outbound-http.ts';
 import {
@@ -86,25 +87,13 @@ function isAdminRole(role: Role): boolean {
 export function createApp(options: { dbPath?: string; db?: Database.Database } = {}) {
   validateProductionSecrets();
   const bootstrapToken = getBootstrapToken();
-  const app = express();
+  const app = createHttpApp();
   const isProduction = app.get('env') === 'production';
   const requireBootstrapToken = isProduction || Boolean(bootstrapToken);
-  const trustedProxy = process.env.AIOPS_TRUST_PROXY?.trim();
-  if (trustedProxy) app.set('trust proxy', trustedProxy);
   const db = options.db ?? openDatabase(options.dbPath ?? process.env.SQLITE_DB_PATH ?? './data/aiops.db');
 
   const authRateLimiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
   const connectorTestLimiter = new SlidingWindowRateLimiter(30, 5 * 60 * 1000);
-
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '2mb' }));
-
-  // Cabeçalhos básicos de segurança
-  app.use((_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    next();
-  });
 
   // Health / Readiness checks (sem vazar segredos ou dados de tenants)
   app.get('/api/health', (_req, res) => {
@@ -117,16 +106,7 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
   });
 
   const postgresConsole = process.env.AIOPS_POSTGRES_CONSOLE === 'true';
-  const pilotOnly = process.env.AIOPS_POSTGRES_PILOT_ONLY === 'true';
-  if (pilotOnly && !postgresConsole) throw new Error('O piloto exige o Compose do console PostgreSQL.');
-  const siteWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SITES === 'true';
-  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, pilotOnly, siteWrites));
-
-  if (pilotOnly) {
-    app.get('/', (_req, res) => res.redirect(302, '/postgres-inventory'));
-    app.use('/api', (_req, res) => res.status(404).json({ error: 'Rota indisponível neste piloto.' }));
-    return { app, db };
-  }
+  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, false, false));
 
   // Middleware de autenticação
   function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction) {

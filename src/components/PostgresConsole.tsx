@@ -21,8 +21,8 @@ type Column = readonly [key: string, label: string];
 
 const button = 'rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-60';
 const input = 'w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100';
-const auditTime = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'medium' });
-const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Column[] }> = [
+const recordTime = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'medium' });
+const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Column[]; feed?: string }> = [
   { id: 'sites', name: 'Sites', columns: [['code', 'Código'], ['name', 'Nome'], ['municipality', 'Município'], ['uf', 'UF'], ['coord_precision', 'Coordenadas']] },
   { id: 'assets', name: 'Ativos', columns: [['name', 'Nome'], ['hostname', 'Hostname'], ['domain', 'Domínio'], ['operational_state', 'Estado']] },
   { id: 'services', name: 'Serviços', columns: [['code', 'Código'], ['name', 'Nome'], ['owner_team', 'Equipe'], ['sla_target_pct', 'Meta de SLA (%)'], ['operational_state', 'Estado']] },
@@ -30,9 +30,27 @@ const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Col
   { id: 'asset-categories', name: 'Categorias', columns: [['code', 'Código'], ['label', 'Rótulo'], ['domain', 'Domínio']] },
   { id: 'concessions', name: 'Concessões', columns: [['code', 'Código'], ['name', 'Nome'], ['region', 'Região']] },
   { id: 'locality-types', name: 'Tipos de localidade', columns: [['code', 'Código'], ['label', 'Rótulo']] },
-  { id: 'audit', name: 'Auditoria', columns: [
+  { id: 'audit', name: 'Auditoria', feed: '/inventory/audit', columns: [
     ['created_at_utc', 'Horário'], ['action', 'Ação'], ['actor_role', 'Papel do autor'],
     ['resource_type', 'Tipo de recurso'], ['resource_id', 'Identificador do recurso'],
+  ] },
+  { id: 'connectors', name: 'Conectores', columns: [['name', 'Nome'], ['connector_type', 'Tipo'], ['status', 'Último estado registrado'], ['last_sync_at_utc', 'Última sincronização']] },
+  { id: 'events', name: 'Eventos', feed: '/inventory/feed/events', columns: [
+    ['created_at_utc', 'Horário'], ['event_type', 'Tipo'], ['source', 'Origem'], ['status', 'Estado'], ['quality_flag', 'Qualidade'],
+  ] },
+  { id: 'incidents', name: 'Incidentes', feed: '/inventory/feed/incidents', columns: [
+    ['created_at_utc', 'Abertura'], ['title', 'Título'], ['status', 'Estado'], ['severity', 'Severidade'],
+    ['impacted_services_count', 'Serviços afetados'],
+  ] },
+  { id: 'metrics', name: 'Métricas', feed: '/inventory/feed/metrics', columns: [
+    ['created_at_utc', 'Horário'], ['metric_name', 'Métrica'], ['value_num', 'Valor'], ['unit', 'Unidade'],
+    ['source', 'Origem'], ['quality_flag', 'Qualidade'],
+  ] },
+  { id: 'logs', name: 'Logs', feed: '/inventory/feed/logs', columns: [
+    ['created_at_utc', 'Horário'], ['severity', 'Severidade'], ['source', 'Origem'], ['message', 'Mensagem'],
+  ] },
+  { id: 'anomalies', name: 'Anomalias', feed: '/inventory/feed/anomalies', columns: [
+    ['created_at_utc', 'Horário'], ['metric_name', 'Métrica'], ['severity', 'Severidade'], ['status', 'Estado'], ['z_score', 'Escore Z'],
   ] },
 ];
 
@@ -375,7 +393,7 @@ export default function PostgresConsole() {
   const [userAdmin, setUserAdmin] = useState(false);
   const [tenantCreation, setTenantCreation] = useState(false);
   const [tenantListRevision, setTenantListRevision] = useState(0);
-  const [selectedResource, setResource] = useState(resources[0]);
+  const [selectedResource, setResource] = useState<(typeof resources)[number]>(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -499,10 +517,10 @@ export default function PostgresConsole() {
                     render={(rows, onRemove, disabled) => (
                       <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} removalResource="concessão" />
                     )} />
-                ) : resource.id === 'audit' ? (
-                  <PagedData<Row> key="audit" endpoint="/inventory/audit" expectedTenant={identity.active_tenant_id}
+                ) : resource.feed ? (
+                  <PagedData<Row> key={resource.id} endpoint={resource.feed} expectedTenant={identity.active_tenant_id}
                     render={rows => <InventoryTable columns={resource.columns} rows={rows.map(row => ({
-                      ...row, created_at_utc: auditTime.format(new Date(String(row.created_at_utc))),
+                      ...row, created_at_utc: recordTime.format(new Date(String(row.created_at_utc))),
                     }))} />} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />

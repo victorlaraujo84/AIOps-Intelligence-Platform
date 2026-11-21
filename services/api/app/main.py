@@ -1,6 +1,8 @@
+import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+import asyncpg
+from fastapi import FastAPI, Request, Response
 
 from .postgres_asset_categories import router as postgres_asset_categories_router
 from .postgres_asset_write import postgres_asset_write_lifespan, router as postgres_asset_write_router
@@ -53,6 +55,20 @@ app.include_router(postgres_topology_router)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": "aiops-fastapi"}
+
+
+@app.get("/ready")
+async def ready(request: Request, response: Response) -> dict[str, str]:
+    auth = request.app.state.postgres_auth
+    inventory = request.app.state.inventory_pool
+    if auth is not None and inventory is not None:
+        try:
+            await asyncio.gather(auth.pool.fetchval("SELECT 1", timeout=2), inventory.fetchval("SELECT 1", timeout=2))
+            return {"status": "ok"}
+        except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+            pass
+    response.status_code = 503
+    return {"status": "degraded"}
 
 
 @app.get("/api/v1/ml/governance-status")

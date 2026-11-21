@@ -48,6 +48,9 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal((await imported('/switch-tenant', { data: { tenant_id: id } })).status, 200);
   const sites = await (await imported('/inventory/sites')).json();
   assert.deepEqual(sites.items.map(site => [site.code, site.tenant_id]), [['site', id]]);
+  const audit = await (await imported('/inventory/audit', { headers: { 'X-AIOps-Expected-Tenant': id } })).json();
+  assert.deepEqual(audit.items.map(row => [row.action, row.resource_id]), [['AUDIT_IMPORTED', 'legacy/site']]);
+  assert.ok(!Object.hasOwn(audit.items[0], 'actor_email'));
   const assets = await (await imported('/inventory/assets')).json();
   assert.equal(assets.items.length, 2);
   const markers = await (await imported('/inventory/sites/map?west=-47&south=-24&east=-46&north=-23')).json();
@@ -938,7 +941,9 @@ assert.ok(ownSites.items.every(site => site.tenant_id === tenantA));
 const box = '/inventory/sites/map?west=-47&south=-24&east=-46&north=-23';
 const ownMap = await (await operator(box)).json();
 assert.deepEqual(ownMap.items.map(site => site.code), ['MAP-SITE']);
-assert.equal((await operator('/inventory/connectors')).status, 404);
+const connectors = await operator('/inventory/connectors');
+assert.equal(connectors.status, 200);
+assert.ok((await connectors.json()).items.every(row => !Object.hasOwn(row, 'encrypted_credentials')));
 for (const resource of ['asset-categories', 'concessions', 'locality-types']) {
   assert.equal((await operator('/inventory/' + resource, { data: {} })).status, 404);
 }

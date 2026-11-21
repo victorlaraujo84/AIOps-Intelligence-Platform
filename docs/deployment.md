@@ -340,3 +340,40 @@ Use `docker compose down` para parar a stack preservando os volumes. Para diagn�
 - **SQLite (`data/aiops.db`):** utilizar `sqlite3 data/aiops.db ".backup 'backup.db'"` com WAL consolidado.
 - **PostgreSQL (`compose.yaml`):** `pg_dump -Fc -U aiops aiops_platform > backup.dump` e `pg_restore -d aiops_platform backup.dump`.
 - O procedimento deve ser validado com restauração periódica em ambiente de homologação (Etapa D).
+
+## Compose unificado PostgreSQL
+
+A composição usa PostgreSQL para autenticação, inventário, auditoria e consulta operacional. O Web usa a prontidão da API PostgreSQL e o projeto não monta o volume SQLite. PostgreSQL e Redis ficam na rede interna do Compose.
+
+A partir do checkout da versão, prepare um arquivo privado e inicialize o banco em um projeto dedicado. Ajuste `AIOPS_HOST`, o IP de escuta e a rede do proxy no arquivo conforme o ambiente. Ao usar imagens publicadas, configure `AIOPS_WEB_IMAGE` e `AIOPS_API_IMAGE` com a mesma versão e autentique o Docker no registro quando necessário.
+
+```bash
+release_env=/caminho/privado/postgres.env
+project=aiops-postgres
+python3 scripts/provision-postgres-release.py --env-file "$release_env" --project "$project" prepare
+dc() {
+  docker compose --env-file "$release_env" -f compose.yaml -f compose.postgres-release.yaml \
+    --profile core -p "$project" "$@"
+}
+dc up -d --wait postgres
+dc run --rm --no-deps postgres-migrate
+python3 scripts/provision-postgres-release.py --env-file "$release_env" --project "$project" roles
+```
+
+Para uma instalação nova, inicialize um administrador global com o comando a seguir. A senha é solicitada no terminal. Crie o tenant inicial pelo console.
+
+```bash
+python3 scripts/provision-postgres-release.py --env-file "$release_env" --project "$project" bootstrap \
+  --email admin@example.invalid --name 'Administrador'
+```
+
+Para uma atualização, use um backup SQLite íntegro em vez do bootstrap. O banco alvo deve estar vazio. A carga verifica o conteúdo de cada tabela, os vínculos e as coordenadas verificadas. Senhas existentes são preservadas e as sessões exigem novo login. A trilha histórica inclui os registros globais, cuja leitura pelo console continua restrita ao tenant selecionado. O valor histórico `unknown` de IP da auditoria é tratado como ausência de endereço.
+
+```bash
+python3 scripts/rehearse-inventory-migration.py /caminho/privado/aiops.db \
+  --release-project "$project" --env-file "$release_env"
+```
+
+Com imagens publicadas, use `dc pull web api` e `dc up -d --no-build --wait`. Para construir a partir do checkout, use `dc up -d --build --wait`. Valide login, seleção do tenant, cadastro e auditoria após subir a stack. A rota `/api/health` devolve erro de disponibilidade se o Web perder acesso à API PostgreSQL ou se ela perder a conexão ao banco.
+
+As telas de conectores, eventos, incidentes, métricas, logs e anomalias apresentam o histórico armazenado. Para substituir a instância legada, o aceite precisa cobrir a configuração e execução de conectores, a ingestão, a operação de incidentes, os relatórios e as integrações efetivamente usadas. Mantenha o arquivo privado e os volumes dos dois ambientes até concluir o ensaio de retorno. Durante a janela, suspenda os escritores legados antes do backup final e valide o PostgreSQL antes de liberar as gravações. Após gravações no PostgreSQL, restaure o serviço sem descartar esses dados ou execute a reconciliação acordada.

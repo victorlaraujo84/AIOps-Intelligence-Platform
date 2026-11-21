@@ -6,7 +6,8 @@ const COOKIE_OPTIONS: CookieOptions = { httpOnly: true, secure: true, sameSite: 
 const API = 'http://api:8000/api/v1';
 const SESSION_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const UUID_PATTERN = /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/;
-const INVENTORY = new Set(['sites', 'assets', 'services', 'asset-categories', 'concessions', 'locality-types']);
+const FEEDS = new Set(['events', 'incidents', 'metrics', 'logs', 'anomalies']);
+const INVENTORY = new Set(['sites', 'assets', 'services', 'asset-categories', 'concessions', 'locality-types', 'connectors']);
 
 function sessionToken(req: Request): string | undefined {
   const token = req.headers.cookie?.split(';')
@@ -170,7 +171,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.patch('/tenant-users/:userId/status', tenantUsers);
   }
 
-  router.get('/inventory/audit', async (req, res) => {
+  async function scopedFeed(req: Request, res: Response) {
     const token = authenticated(req, res);
     if (!token) return;
     const expected = req.get('X-AIOps-Expected-Tenant');
@@ -179,8 +180,16 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
       return;
     }
     const query = queryFor(req, ['after', 'limit']);
-    forward(res, await callCore('/inventory/audit' + query, token, undefined, expected));
-  });
+    const resource = req.params.feed;
+    if (resource && !FEEDS.has(resource)) {
+      res.status(404).json({ error: 'Consulta indisponível.' });
+      return;
+    }
+    const path = resource ? '/inventory/feed/' + resource : '/inventory/audit';
+    forward(res, await callCore(path + query, token, undefined, expected));
+  }
+  router.get('/inventory/audit', scopedFeed);
+  router.get('/inventory/feed/:feed', scopedFeed);
 
   router.get('/inventory/sites/map', async (req, res) => {
     const token = authenticated(req, res);
@@ -211,6 +220,80 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   }
 
   if (siteWrites) {
+    const cepLimit = new SlidingWindowRateLimiter(30, 60_000);
+    const geocodeLimit = new SlidingWindowRateLimiter(1, 1000);
+
+    async function authorizeGeography(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      if (!expected || !UUID_PATTERN.test(expected)) {
+        res.status(422).json({ error: 'Identificador de tenant inválido.' });
+        return;
+      }
+      const result = await callCore('/auth/me', token);
+      if (result.status !== 200) {
+        forward(res, result);
+        return;
+      }
+      if (result.body.active_tenant_id !== expected) {
+        res.status(409).json({ error: 'Selecione ou confirme o tenant ativo.' });
+        return;
+      }
+      if (!['super_admin', 'tenant_admin', 'tenant_operator'].includes(result.body.role)) {
+        res.status(403).json({ error: 'Permissão insuficiente para consultar endereços de sites.' });
+        return;
+      }
+      return expected;
+    }
+
+    router.get('/geo/cep/:cep', async (req, res) => {
+      const tenant = await authorizeGeography(req, res);
+      if (!tenant) return;
+      const cep = req.params.cep;
+      if (!/^\d{5}-?\d{3}$/.test(cep)) {
+        res.status(422).json({ error: 'Informe um CEP com oito dígitos.' });
+        return;
+      }
+      if (!cepLimit.check(tenant).allowed) {
+        res.status(429).json({ error: 'Limite de consultas de CEP atingido.' });
+        return;
+      }
+      try {
+        const { lookupCepAddress } = await import('./integrations.ts');
+        res.json(await lookupCepAddress(cep));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '';
+        const missing = message === 'CEP não encontrado na base oficial.';
+        res.status(missing ? 404 : 502).json({ error: missing ? message : 'Consulta de CEP indisponível.' });
+      }
+    });
+
+    router.post('/geo/geocode', async (req, res) => {
+      if (!await authorizeGeography(req, res)) return;
+      const { address = '', municipality, uf } = req.body ?? {};
+      if (typeof address !== 'string' || address.length > 400 || typeof municipality !== 'string'
+        || !municipality.trim() || municipality.length > 200 || typeof uf !== 'string' || !/^[A-Za-z]{2}$/.test(uf)) {
+        res.status(422).json({ error: 'Informe município e UF válidos para localizar o site.' });
+        return;
+      }
+      if (!geocodeLimit.check('nominatim').allowed) {
+        res.status(429).json({ error: 'Consultas de coordenadas muito frequentes. Tente novamente.' });
+        return;
+      }
+      try {
+        const { geocodeAddressNominatim } = await import('./integrations.ts');
+        const point = await geocodeAddressNominatim({ address: address.trim(), municipality: municipality.trim(), uf });
+        if (!point || Math.abs(point.latitude) > 90 || Math.abs(point.longitude) > 180) {
+          res.status(404).json({ error: 'Endereço não localizado. Informe as coordenadas manualmente.' });
+          return;
+        }
+        res.json(point);
+      } catch {
+        res.status(502).json({ error: 'Serviço de geocodificação indisponível.' });
+      }
+    });
+
     router.post('/inventory/concessions', writeInventory('concessions'));
     router.delete('/inventory/concessions/:id', writeInventory('concessions'));
     router.post('/inventory/locality-types', writeInventory('locality-types'));

@@ -2,6 +2,14 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { errorMessage, request } from '../lib/postgres-console.ts';
 import { button, CatalogField, field, loadCatalog, type Choice } from './PostgresInventoryFields.tsx';
 
+const identifierFields = [
+  ['ip_address', 'Endereço IP', 45],
+  ['vendor', 'Fabricante', 200],
+  ['model', 'Modelo', 200],
+  ['provider_name', 'Provedor', 200],
+  ['redundancy_group', 'Grupo de redundância', 200],
+] as const;
+
 type Asset = { id: string } & Record<string, string | number | null>;
 
 export function PostgresAssetEditor({ tenant, record: asset, onCancel, onSaved }: {
@@ -71,6 +79,11 @@ export function PostgresAssetEditor({ tenant, record: asset, onCancel, onSaved }
         <label className="space-y-1 text-sm"><span>Hostname</span>
           <input className={field} name="hostname" maxLength={200} defaultValue={asset?.hostname ?? ''} />
         </label>
+        {identifierFields.map(([name, label, maxLength]) => (
+          <label key={name} className="space-y-1 text-sm"><span>{label}</span>
+            <input className={field} name={name} maxLength={maxLength} defaultValue={asset?.[name] ?? ''} />
+          </label>
+        ))}
         <CatalogField name="site_id" label="Site" initial={String(asset?.site_id ?? '')}
           choices={catalogs?.sites ?? []} disabled={!catalogs} />
         <CatalogField name="category_id" label="Categoria" initial={String(asset?.category_id ?? '')}

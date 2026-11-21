@@ -40,7 +40,9 @@ WITH known(version, filename, sha256) AS (
     (21, '021_concession_delete.sql', :'concession_delete_sha'),
     (22, '022_site_delete.sql', :'site_delete_sha'),
     (23, '023_asset_delete.sql', :'asset_delete_sha'),
-    (24, '024_service_delete.sql', :'service_delete_sha')
+    (24, '024_service_delete.sql', :'service_delete_sha'),
+    (25, '025_legacy_operational_history.sql', :'operational_history_sha'),
+    (26, '026_asset_identification.sql', :'asset_identification_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -70,13 +72,29 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 21), false) AS has_concession_delete,
   COALESCE(bool_or(m.version = 22), false) AS has_site_delete,
   COALESCE(bool_or(m.version = 23), false) AS has_asset_delete,
-  COALESCE(bool_or(m.version = 24), false) AS has_service_delete
+  COALESCE(bool_or(m.version = 24), false) AS has_service_delete,
+  COALESCE(bool_or(m.version = 25), false) AS has_operational_history,
+  COALESCE(bool_or(m.version = 26), false) AS has_asset_identification
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_asset_identification
+  \if :has_operational_history
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 026 sem versão 025'; END $$;
+  \endif
+\endif
+
+\if :has_operational_history
+  \if :has_service_delete
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 025 sem versão 024'; END $$;
+  \endif
 \endif
 
 \if :has_service_delete
@@ -424,6 +442,20 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../024_service_delete.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (24, '024_service_delete.sql', :'service_delete_sha');
+\endif
+
+\if :has_operational_history
+\else
+  \ir ../025_legacy_operational_history.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (25, '025_legacy_operational_history.sql', :'operational_history_sha');
+\endif
+
+\if :has_asset_identification
+\else
+  \ir ../026_asset_identification.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (26, '026_asset_identification.sql', :'asset_identification_sha');
 \endif
 
 COMMIT;

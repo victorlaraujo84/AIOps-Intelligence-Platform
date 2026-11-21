@@ -2,13 +2,17 @@ import 'dotenv/config';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { createApp } from './src/server/app.ts';
+import { createPostgresApp } from './src/server/postgres-app.ts';
 
 const PORT = Number(process.env.PORT || 3000);
 const isProduction = process.env.NODE_ENV === 'production';
 
 async function startServer() {
-  const { app } = createApp();
+  const postgresOnly = process.env.AIOPS_POSTGRES_PILOT_ONLY === 'true';
+  if (postgresOnly && process.env.AIOPS_POSTGRES_CONSOLE !== 'true') {
+    throw new Error('Habilite o console PostgreSQL neste modo.');
+  }
+  const app = postgresOnly ? createPostgresApp() : (await import('./src/server/app.ts')).createApp().app;
 
   if (!isProduction) {
     const { createServer: createViteServer } = await import('vite');

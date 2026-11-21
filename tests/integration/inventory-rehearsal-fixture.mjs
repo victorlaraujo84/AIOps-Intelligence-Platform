@@ -8,8 +8,8 @@ import { openDatabase } from './src/server/db.ts';
 import { hashPassword } from './src/server/security.ts';
 
 const db = openDatabase(':memory:');
-const ids = Array.from({ length: 12 }, (_, i) => `00000000-0000-4000-9000-${String(i + 1).padStart(12, '0')}`);
-const [tenant, concession, locality, category, site, physicalAsset, logicalAsset, edge, service, dependency, admin, operator] = ids;
+const ids = Array.from({ length: 18 }, (_, i) => `00000000-0000-4000-9000-${String(i + 1).padStart(12, '0')}`);
+const [tenant, concession, locality, category, site, physicalAsset, logicalAsset, edge, service, dependency, admin, operator, audit, globalAudit, connector, event, incident, sample] = ids;
 const now = '2026-11-21T12:00:00.000Z';
 const label = 'São Paulo\\N\tfixture\nsegunda linha';
 const insert = (table, columns, values) => {
@@ -41,6 +41,22 @@ db.transaction(() => {
     [edge, tenant, physicalAsset, logicalAsset, 'depends_on', 1, now]);
   insert('services', 'id tenant_id code name created_at_utc updated_at_utc', [service, tenant, 'service', label, now, now]);
   insert('service_dependencies', 'id tenant_id service_id asset_id created_at_utc', [dependency, tenant, service, logicalAsset, now]);
+  insert('connectors', 'id tenant_id connector_type name config_json created_at_utc updated_at_utc',
+    [connector, tenant, 'open_meteo', 'Conector fixture', JSON.stringify({ source: label }), now, now]);
+  insert('canonical_events', 'id tenant_id site_id asset_id connector_id idempotency_key event_time_utc observed_at_utc ingested_at_utc source event_type status',
+    [event, tenant, site, physicalAsset, connector, 'fixture-event', now, now, now, 'fixture', 'fixture', 'OPEN']);
+  insert('incidents', 'id tenant_id root_site_id root_asset_id title opened_at_utc rca_evidence_json',
+    [incident, tenant, site, physicalAsset, label, now, JSON.stringify([{ evidence: label }])]);
+  insert('incident_events', 'incident_id event_id tenant_id', [incident, event, tenant]);
+  insert('metric_samples', 'id tenant_id asset_id site_id service_id connector_id idempotency_key metric_name value_num unit observed_at_utc ingested_at_utc source',
+    [sample, tenant, physicalAsset, site, service, connector, 'fixture-sample', 'fixture', 1, 'count', now, now, 'fixture']);
+  insert('ai_agent_configs', 'tenant_id updated_at_utc', [tenant, now]);
+  insert('audit_logs',
+    'id tenant_id actor_user_id actor_email actor_role action resource_type resource_id details_json ip_address created_at_utc',
+    [audit, tenant, admin, 'admin@example.invalid', 'super_admin', 'AUDIT_IMPORTED', 'site', 'legacy/site',
+      JSON.stringify({ label }), '192.0.2.10', now]);
+  insert('audit_logs', 'id actor_user_id actor_role action resource_type resource_id ip_address created_at_utc',
+    [globalAudit, admin, 'super_admin', 'AUDIT_IMPORTED_GLOBAL', 'system', 'legacy/global', 'unknown', now]);
 })();
 
 const dir = await mkdtemp(join(tmpdir(), 'inventory-rehearsal-'));

@@ -5,7 +5,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, IPvAnyAddress
 
 from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS, inventory_role_pool
@@ -41,8 +41,17 @@ FROM pg_roles r WHERE r.rolname = current_user
 """
 
 
-class CreateAsset(BaseModel):
+class AssetIdentification(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    ip_address: IPvAnyAddress | None = None
+    vendor: Name | None = None
+    model: Name | None = None
+    provider_name: Name | None = None
+    redundancy_group: Name | None = None
+
+
+class CreateAsset(AssetIdentification):
 
     name: Name
     hostname: Name | None = None
@@ -53,8 +62,7 @@ class CreateAsset(BaseModel):
     criticality: Criticality = "media"
 
 
-class UpdateAsset(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class UpdateAsset(AssetIdentification):
 
     name: Name | None = None
     hostname: Name | None = None
@@ -126,12 +134,14 @@ async def create_asset(
         asset = await connection.fetchrow(
             f"""
             INSERT INTO public.assets (
-                tenant_id, name, hostname, site_id, domain, georeference_mode, criticality, category_id, asset_type_code
+                tenant_id, name, hostname, site_id, domain, georeference_mode, criticality, category_id,
+                asset_type_code, ip_address, vendor, model, provider_name, redundancy_group
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
             RETURNING {ASSET_FIELDS}
             """,
             tenant, body.name, body.hostname, body.site_id, domain, mode, body.criticality, body.category_id, type_code,
+            body.ip_address, body.vendor, body.model, body.provider_name, body.redundancy_group,
         )
         await audit_inventory_write(connection, tenant, identity, "ASSET_CREATED", "asset", asset["id"])
     response.headers.update(AUTH_HEADERS)

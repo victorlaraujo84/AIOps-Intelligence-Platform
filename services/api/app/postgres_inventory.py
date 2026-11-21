@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Header, Query, R
 from .postgres_auth import AUTH_HEADERS, get_current_session
 
 
-Resource = Literal["sites", "assets", "services", "asset-categories", "concessions", "locality-types"]
+Resource = Literal["sites", "assets", "services", "asset-categories", "concessions", "locality-types", "connectors"]
 router = APIRouter(prefix="/api/v1/inventory", tags=["inventory"])
 COLUMNS = {
+    "connectors": "id, tenant_id, connector_type, name, status, last_sync_at_utc",
     "asset-categories": "id, tenant_id, code, label, domain, created_at_utc",
     "concessions": "id, tenant_id, code, name, region, description, created_at_utc",
     "locality-types": "id, tenant_id, code, label, description, created_at_utc",
@@ -20,7 +21,10 @@ COLUMNS = {
         "id, tenant_id, concession_id, locality_type_id, code, name, address, cep, municipality, uf, "
         "latitude, longitude, coord_precision, coord_verified, criticality"
     ),
-    "assets": "id, tenant_id, site_id, category_id, name, hostname, domain, georeference_mode, asset_type_code, criticality, operational_state",
+    "assets": (
+        "id, tenant_id, site_id, category_id, name, hostname, domain, georeference_mode, asset_type_code, "
+        "criticality, operational_state, host(ip_address) AS ip_address, vendor, model, provider_name, redundancy_group"
+    ),
     "services": "id, tenant_id, code, name, domain, criticality, owner_team, sla_target_pct, operational_state, description",
 }
 
@@ -108,6 +112,18 @@ async def inventory_read_transaction(pool: asyncpg.Pool, identity: asyncpg.Recor
         raise HTTPException(503, "Inventário temporariamente indisponível.", headers=AUTH_HEADERS) from None
 
 
+Feed = Literal["events", "incidents", "metrics", "logs", "anomalies"]
+FEEDS = {
+    "audit": ("audit_logs", "created_at_utc",
+              "actor_role, action, resource_type, resource_id"),
+    "events": ("canonical_events", "observed_at_utc", "event_type, status, source, quality_flag"),
+    "incidents": ("incidents", "opened_at_utc", "title, status, severity, impacted_services_count"),
+    "metrics": ("metric_samples", "observed_at_utc", "metric_name, value_num, unit, source, quality_flag"),
+    "logs": ("operational_logs", "observed_at_utc", "severity, left(message, 1000) AS message, source"),
+    "anomalies": ("anomaly_detections", "detected_at_utc", "metric_name, severity, status, z_score"),
+}
+
+
 @router.get("/audit")
 async def list_audit(
     response: Response,
@@ -117,6 +133,23 @@ async def list_audit(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     after: Annotated[str | None, Query(max_length=90)] = None,
 ):
+    return await read_feed("audit", response, identity, pool, expected_tenant, limit, after)
+
+
+@router.get("/feed/{resource}")
+async def list_feed(
+    resource: Feed,
+    response: Response,
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    pool: Annotated[asyncpg.Pool, Depends(get_inventory_pool)],
+    expected_tenant: Annotated[UUID, Header(alias="X-AIOps-Expected-Tenant")],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    after: Annotated[str | None, Query(max_length=90)] = None,
+):
+    return await read_feed(resource, response, identity, pool, expected_tenant, limit, after)
+
+
+async def read_feed(resource, response, identity, pool, expected_tenant, limit, after):
     if identity["active_tenant_id"] != expected_tenant:
         raise HTTPException(409, "Selecione ou confirme o tenant ativo.", headers=AUTH_HEADERS)
 
@@ -131,16 +164,17 @@ async def list_audit(
             before_time = before_time.astimezone(timezone.utc)
             before_id = UUID(identifier)
         except (ValueError, OverflowError):
-            raise HTTPException(422, "Cursor de auditoria inválido.", headers=AUTH_HEADERS) from None
+            raise HTTPException(422, "Cursor inválido.", headers=AUTH_HEADERS) from None
 
+    table, timestamp_column, fields = FEEDS[resource]
     async with inventory_read_transaction(pool, identity) as (connection, tenant):
         rows = await connection.fetch(
-            """
-            SELECT id, tenant_id, actor_role, action, resource_type, resource_id, created_at_utc
-            FROM public.audit_logs
+            f"""
+            SELECT id, tenant_id, {timestamp_column} AS created_at_utc, {fields}
+            FROM public.{table}
             WHERE tenant_id = $1
-              AND ($2::timestamptz IS NULL OR (created_at_utc, id) < ($2::timestamptz, $3::uuid))
-            ORDER BY created_at_utc DESC, id DESC
+              AND ($2::timestamptz IS NULL OR ({timestamp_column}, id) < ($2::timestamptz, $3::uuid))
+            ORDER BY {timestamp_column} DESC, id DESC
             LIMIT $4
             """,
             tenant, before_time, before_id, limit + 1,

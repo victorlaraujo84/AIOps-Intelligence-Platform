@@ -4,6 +4,7 @@
 import argparse
 from contextlib import closing
 from datetime import datetime
+from ipaddress import ip_address
 import json
 from pathlib import Path
 import re
@@ -41,8 +42,60 @@ INVENTORY = {
 IDENTITIES = {
     "users": "id tenant_id email full_name role password_hash is_active created_at_utc last_login_utc",
 }
+AUDIT = {
+    "audit_logs": (
+        "id tenant_id actor_user_id actor_email actor_role action resource_type resource_id "
+        "details_json ip_address created_at_utc"
+    ),
+}
+OPERATIONAL_HISTORY = {
+    "connectors": (
+        "id tenant_id connector_type name endpoint_url auth_mode encrypted_credentials config_json "
+        "poll_interval_sec status last_sync_at_utc last_error created_at_utc updated_at_utc"
+    ),
+    "connector_sync_runs": (
+        "id tenant_id connector_id started_at_utc finished_at_utc status records_ingested "
+        "records_deduplicated latency_ms error_message raw_metadata_json"
+    ),
+    "canonical_events": (
+        "id tenant_id site_id asset_id connector_id idempotency_key event_time_utc observed_at_utc "
+        "ingested_at_utc forecast_issued_at_utc source event_type status lat lon quality_flag payload_json"
+    ),
+    "incidents": (
+        "id tenant_id root_site_id root_asset_id title status severity impacted_services_count rca_category "
+        "rca_confidence rca_evidence_json rule_version human_reviewed_by human_reviewed_at_utc opened_at_utc resolved_at_utc"
+    ),
+    "incident_events": "incident_id event_id tenant_id role_in_incident",
+    "metric_samples": (
+        "id tenant_id asset_id service_id site_id connector_id idempotency_key metric_name value_num unit "
+        "observed_at_utc ingested_at_utc source quality_flag tags_json"
+    ),
+    "operational_logs": (
+        "id tenant_id asset_id service_id site_id connector_id idempotency_key severity message "
+        "observed_at_utc ingested_at_utc source trace_id attributes_json"
+    ),
+    "ingestion_checkpoints": (
+        "id tenant_id connector_id cursor_key cursor_value rows_processed bytes_processed status updated_at_utc"
+    ),
+    "authorized_collection_scopes": (
+        "id tenant_id protocol target_cidr_or_host port description rate_limit_rpm is_active approved_by approved_at_utc"
+    ),
+    "anomaly_detections": (
+        "id tenant_id asset_id service_id metric_name observed_value baseline_mean baseline_stddev z_score "
+        "severity detected_at_utc status"
+    ),
+    "ai_agent_configs": (
+        "tenant_id mode endpoint_url encrypted_api_key model_name data_sharing_authorized timeout_ms updated_by updated_at_utc"
+    ),
+}
+TABLE_KEYS = {
+    "ai_agent_configs": ("tenant_id",),
+    "incident_events": ("incident_id", "event_id"),
+    "metric_samples": ("tenant_id", "observed_at_utc", "id"),
+}
 REHEARSAL_DATABASE = "aiops_inventory_rehearsal"
 PILOT_DATABASE = "aiops_inventory_pilot"
+RELEASE_DATABASE = "aiops_platform_postgres"
 SCRYPT_HASH = re.compile(r"scrypt:[0-9a-f]{32}:[0-9a-f]{128}")
 
 BEGIN = r"""
@@ -125,20 +178,23 @@ def convert(table, row, ordinal):
         if value is None:
             continue
         try:
-            if column == "id" or column.endswith("_id"):
+            if column == "id" or (column.endswith("_id") and column != "resource_id"):
                 result[column] = str(UUID(value))
             elif column.endswith("_utc"):
                 if datetime.fromisoformat(value).utcoffset() is None:
                     raise ValueError()
-            elif column in {"coord_verified", "is_redundant", "is_active"}:
+            elif column in {"coord_verified", "is_redundant", "is_active", "data_sharing_authorized"}:
                 if value not in (0, 1):
                     raise ValueError()
                 result[column] = bool(value)
-            elif column == "metadata_json":
-                metadata = json.loads(value)
-                if not isinstance(metadata, dict):
+            elif column.endswith("_json"):
+                document = json.loads(value)
+                expected_type = list if column == "rca_evidence_json" else dict
+                if not isinstance(document, expected_type):
                     raise ValueError()
-                result[column] = metadata
+                result[column] = document
+            elif table == "audit_logs" and column == "ip_address":
+                result[column] = None if value == "unknown" else str(ip_address(value))
             elif column == "uf" and len(value) != 2:
                 raise ValueError()
         except (AttributeError, TypeError, ValueError):
@@ -161,17 +217,27 @@ def convert(table, row, ordinal):
     return result
 
 
-def write_transfer(db, output, *, include_identities=False, pilot=False):
-    database = PILOT_DATABASE if pilot else REHEARSAL_DATABASE
+def write_transfer(db, output, *, include_identities=False, database=REHEARSAL_DATABASE):
     print(BEGIN.format(database=database), file=output)
-    if pilot:
+    if database != REHEARSAL_DATABASE:
         print(PILOT_GUARD, file=output)
     tables = INVENTORY
     if include_identities:
         print(IDENTITY_GUARD, file=output)
         print(VERIFY_NO_SESSIONS, file=output)
-        tables = INVENTORY | IDENTITIES
+        tables = INVENTORY | IDENTITIES | AUDIT
+    if database == RELEASE_DATABASE:
+        tables = tables | OPERATIONAL_HISTORY
+        known = set(tables) | {"schema_migrations", "sessions"}
+        source_tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*'"
+        )}
+        if source_tables - known:
+            raise ValueError("O backup contém tabelas fora do contrato de migração")
     for table, columns in tables.items():
+        key = TABLE_KEYS.get(table, ("id",))
+        join_key = " AND ".join(f"actual.{column} = item.{column}" for column in key)
+        order_key = ", ".join(key)
         column_names = columns.split()
         names = ", ".join(column_names)
         selected = ", ".join(f"item.{column}" for column in column_names)
@@ -185,7 +251,7 @@ BEGIN
 END $$;
 COPY pg_temp.aiops_inventory_input (document) FROM STDIN;""", file=output)
 
-        cursor = db.execute(f"SELECT {names} FROM {table} ORDER BY id")
+        cursor = db.execute(f"SELECT {names} FROM {table} ORDER BY {order_key}")
         for ordinal, row in enumerate(cursor, 1):
             record = convert(table, row, ordinal)
             try:
@@ -206,8 +272,8 @@ BEGIN
     SELECT 1
     FROM pg_temp.aiops_inventory_input AS source
     CROSS JOIN LATERAL jsonb_populate_record(NULL::public.{table}, source.document) AS item
-    LEFT JOIN public.{table} AS actual ON actual.id = item.id
-    WHERE actual.id IS NULL OR ROW({actual}) IS DISTINCT FROM ROW({selected})
+    LEFT JOIN public.{table} AS actual ON {join_key}
+    WHERE actual.{key[0]} IS NULL OR ROW({actual}) IS DISTINCT FROM ROW({selected})
   ) THEN
     RAISE EXCEPTION 'Campos em {table} divergem da origem';
   END IF;
@@ -241,14 +307,15 @@ END $$;""", file=output)
     if include_identities:
         print(VERIFY_NO_SESSIONS, file=output)
     print(END, file=output)
-    print("COMMIT;" if pilot else "ROLLBACK;", file=output)
+    print("ROLLBACK;" if database == REHEARSAL_DATABASE else "COMMIT;", file=output)
 
 
-def run_compose_transfer(db, project, env_file, *, include_identities, pilot):
+def run_compose_transfer(db, project, env_file, *, include_identities, database):
     command = ["docker", "compose", "--project-name", project, "--profile", "core"]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
-    database = PILOT_DATABASE if pilot else REHEARSAL_DATABASE
+    if database == RELEASE_DATABASE:
+        command.extend(["-f", "compose.yaml", "-f", "compose.postgres-release.yaml"])
     command.extend([
         "exec", "-T", "postgres", "sh", "-ec",
         'exec psql -XqAt -F "|" -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" -f -',
@@ -263,7 +330,7 @@ def run_compose_transfer(db, project, env_file, *, include_identities, pilot):
     ) as process:
         try:
             with process.stdin:
-                write_transfer(db, process.stdin, include_identities=include_identities, pilot=pilot)
+                write_transfer(db, process.stdin, include_identities=include_identities, database=database)
         except BrokenPipeError:
             raise ValueError("o PostgreSQL encerrou a operação; confira o projeto, o schema e o banco vazio") from None
         rows = process.stdout.read().splitlines()
@@ -273,6 +340,9 @@ def run_compose_transfer(db, project, env_file, *, include_identities, pilot):
     expected = set(INVENTORY)
     if include_identities:
         expected.update(IDENTITIES)
+        expected.update(AUDIT)
+    if database == RELEASE_DATABASE:
+        expected.update(OPERATIONAL_HISTORY)
     for row in rows:
         match = re.fullmatch(r"([a-z_]+)\|([0-9]+)\|([0-9]+)", row)
         if not match or match[1] not in expected or match[2] != match[3]:
@@ -287,18 +357,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path, help="backup SQLite consistente e separado da instância ativa")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--identity-project", help="inclui usuários via psql no projeto Compose descartável")
+    mode.add_argument("--identity-project", help="inclui usuários e auditoria via psql no projeto Compose descartável")
     mode.add_argument("--inventory-project", help="envia apenas o inventário ao projeto Compose descartável")
     mode.add_argument(
-        "--pilot-project", help="persiste inventário e identidades no banco vazio aiops_inventory_pilot",
+        "--pilot-project", help="persiste inventário, identidades e auditoria no banco vazio aiops_inventory_pilot",
+    )
+    mode.add_argument(
+        "--release-project", help="carrega uma instalação vazia do Compose PostgreSQL",
     )
     parser.add_argument("--env-file", type=Path, help="arquivo de variáveis do projeto Compose")
     args = parser.parse_args()
-    pilot = args.pilot_project is not None
-    project = next((name for name in (args.pilot_project, args.identity_project, args.inventory_project)
+    database = RELEASE_DATABASE if args.release_project else PILOT_DATABASE if args.pilot_project else REHEARSAL_DATABASE
+    project = next((name for name in (args.release_project, args.pilot_project, args.identity_project, args.inventory_project)
                     if name is not None), None)
     if project is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
         parser.error("nome de projeto Compose inválido")
+    if args.release_project and args.env_file is None:
+        parser.error("--release-project exige --env-file")
     if args.env_file is not None and project is None:
         parser.error("--env-file exige um projeto Compose")
     snapshot = args.snapshot.resolve()
@@ -312,7 +387,7 @@ def main():
             if project is not None:
                 run_compose_transfer(
                     db, project, args.env_file,
-                    include_identities=pilot or args.identity_project is not None, pilot=pilot,
+                    include_identities=database != REHEARSAL_DATABASE or args.identity_project is not None, database=database,
                 )
                 return
             # Prepara toda a entrada antes de tocar o PostgreSQL. O arquivo é temporário e privado.
