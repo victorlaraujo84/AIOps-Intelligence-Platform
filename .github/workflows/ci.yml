@@ -192,7 +192,7 @@ jobs:
           docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core \
             up -d --no-deps --force-recreate --wait web
           NODE_EXTRA_CA_CERTS="$ca" node tests/integration/postgres-console-smoke.mjs
-      - name: Validar cadastro e edição de sites no piloto
+      - name: Validar cadastro, edição e coordenadas de sites no piloto
         shell: bash
         run: |
           AIOPS_PILOT_HTTPS_PORT=443 AIOPS_POSTGRES_PILOT_WRITE_SITES=true \
@@ -207,10 +207,14 @@ jobs:
           FROM sites s
           JOIN audit_logs a ON a.tenant_id = s.tenant_id AND a.resource_id = s.id::text
           WHERE s.code = 'PILOT-EDIT' AND a.resource_type = 'site'
+            AND (a.action <> 'SITE_COORDS_VERIFIED'
+                 OR (s.coord_verified AND ST_SRID(s.geom::geometry) = 4326
+                     AND ST_X(s.geom::geometry) = s.longitude AND ST_Y(s.geom::geometry) = s.latitude
+                     AND a.details_json = jsonb_build_object('latitude', s.latitude, 'longitude', s.longitude)))
           GROUP BY a.action ORDER BY a.action;
           SQL
           )
-          test "$counts" = $'SITE_CREATED|1\nSITE_UPDATED|1'
+          test "$counts" = $'SITE_COORDS_VERIFIED|1\nSITE_CREATED|1\nSITE_UPDATED|1'
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |

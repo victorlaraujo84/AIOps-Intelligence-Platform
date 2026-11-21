@@ -99,20 +99,45 @@ if (process.argv.includes('--site-writes')) {
   assert.equal(updated.status, 200);
   assert.equal((await updated.json()).concession_id, ownConcessions.items[0].id);
 
+  const location = edit + '/verify-coords';
+  const coords = { latitude: -18.5, longitude: -43.25 };
+  const verify = (session, tenant, data) => session(location, { method: 'PATCH', data, headers: scope(tenant) });
+  const viewport = path + '/map?west=-44&south=-19&east=-43&north=-18';
+  const before = await (await a(viewport)).json();
+  assert.ok(!before.items.some(marker => marker.id === site.id));
+  assert.equal((await a(location, { method: 'PATCH', data: coords })).status, 422);
+  assert.equal((await verify(viewer, tenantA, coords)).status, 403);
+  assert.equal((await verify(b, tenantB, coords)).status, 404);
+  assert.equal((await verify(a, tenantA, { ...coords, latitude: -91 })).status, 422);
+  const verified = await verify(a, tenantA, coords);
+  assert.equal(verified.status, 200);
+  const point = await verified.json();
+  assert.equal(point.coord_precision, 'manual_verificada');
+  assert.equal(point.coord_verified, true);
+  const mapA = await (await a(viewport)).json();
+  const marker = mapA.items.find(item => item.id === site.id);
+  assert.equal(marker?.latitude, coords.latitude);
+  assert.equal(marker?.longitude, coords.longitude);
+  const mapB = await (await b(viewport)).json();
+  assert.ok(!mapB.items.some(item => item.id === site.id));
+
   assert.equal((await loginAs(global, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
   assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantA } })).status, 200);
   assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
   assert.equal((await global(path, {
     data: { code: 'stale-tab', name: 'Formulário de outro tenant' }, headers: scope(tenantA),
   })).status, 409);
+  assert.equal((await verify(global, tenantA, { latitude: 0, longitude: 0 })).status, 409);
   const readB = await (await b(path)).json();
   assert.ok(!readB.items.some(item => item.code === 'STALE-TAB' || item.id === site.id));
   const readA = await (await a(path)).json();
-  assert.equal(readA.items.find(item => item.id === site.id)?.name, 'Site do piloto atualizado');
+  const loaded = readA.items.find(item => item.id === site.id);
+  assert.equal(loaded?.name, 'Site do piloto atualizado');
+  assert.equal(loaded?.latitude, coords.latitude);
   for (const session of [a, b, viewer, global]) {
     assert.equal((await session('/logout', { data: {} })).status, 204);
   }
-  console.log('Cadastro e edição de sites verificados com permissões, vínculos e proteção contra tenant desatualizado.');
+  console.log('Cadastro, edição e coordenadas no mapa verificados com proteção por tenant.');
   process.exit(0);
 }
 

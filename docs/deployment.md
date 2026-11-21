@@ -255,6 +255,8 @@ Configure `AIOPS_POSTGRES_SITE_WRITE_DSN` com uma conta dedicada ao papel de sit
 
 Ao trocar de tenant em outra aba, salve apenas depois de atualizar a sessão nesta aba. A API confere se o tenant do formulário corresponde à sessão. Para voltar ao modo de consulta, remova a flag e recrie o Web.
 
+Use **Verificar coordenadas** na linha do site para informar latitude e longitude em graus decimais. A confirmação grava a geometria no PostGIS, registra o autor e torna o ponto visível no mapa do tenant.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

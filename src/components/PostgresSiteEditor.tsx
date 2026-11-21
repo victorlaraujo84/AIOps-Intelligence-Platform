@@ -138,3 +138,60 @@ export function PostgresSiteEditor({ tenant, site, onCancel, onSaved }: {
     </form>
   );
 }
+
+export function PostgresSiteCoordinates({ tenant, site, onCancel, onSaved }: {
+  tenant: string;
+  site: Site;
+  onCancel: () => void;
+  onSaved: () => void;
+}) {
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
+
+  async function verify(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const latitude = String(data.get('latitude') ?? '').trim();
+    const longitude = String(data.get('longitude') ?? '').trim();
+    if (!latitude || !longitude || !Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) {
+      setError('Informe latitude e longitude válidas.');
+      return;
+    }
+    setPending(true);
+    setError('');
+    try {
+      await request('/inventory/sites/' + site.id + '/verify-coords', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'X-AIOps-Expected-Tenant': tenant },
+        body: JSON.stringify({ latitude: Number(latitude), longitude: Number(longitude) }),
+      });
+      onSaved();
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4" onSubmit={verify}>
+      <h3 className="font-semibold">Verificar coordenadas de {site.name}</h3>
+      <p className="text-sm text-slate-300">Informe as coordenadas conferidas, em graus decimais.</p>
+      <fieldset disabled={pending} className="grid min-w-0 gap-3 sm:grid-cols-2">
+        <label className="space-y-1 text-sm"><span>Latitude</span>
+          <input className={field} name="latitude" type="number" min={-90} max={90} step="any"
+            defaultValue={site.latitude ?? ''} required />
+        </label>
+        <label className="space-y-1 text-sm"><span>Longitude</span>
+          <input className={field} name="longitude" type="number" min={-180} max={180} step="any"
+            defaultValue={site.longitude ?? ''} required />
+        </label>
+      </fieldset>
+      {error && <p role="alert" className="text-sm text-rose-200">{error}</p>}
+      <div className="flex gap-2">
+        <button className={button} type="submit" disabled={pending}>{pending ? 'Verificando…' : 'Confirmar coordenadas'}</button>
+        <button className={button} type="button" disabled={pending} onClick={onCancel}>Cancelar</button>
+      </div>
+    </form>
+  );
+}

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
-import { PostgresSiteEditor } from './PostgresSiteEditor.tsx';
+import { PostgresSiteCoordinates, PostgresSiteEditor } from './PostgresSiteEditor.tsx';
 
 type Tenant = { id: string; name: string; slug: string };
 type Identity = { id: string; full_name: string; role: string; active_tenant_id: string | null };
@@ -148,25 +148,31 @@ function PagedData<T extends { id: string }>({ endpoint, render }: { endpoint: s
   );
 }
 
-function InventoryTable({ columns, rows, onEdit }: {
+function InventoryTable({ columns, rows, onEdit, onVerify }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
+  onVerify?: (row: Row) => void;
 }) {
+  const hasActions = Boolean(onEdit || onVerify);
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm">
         <thead className="bg-slate-900 text-slate-300">
           <tr>
             {columns.map(([key, label]) => <th key={key} scope="col" className="px-3 py-2">{label}</th>)}
-            {onEdit && <th scope="col" className="px-3 py-2">Ações</th>}
+            {hasActions && <th scope="col" className="px-3 py-2">Ações</th>}
           </tr>
         </thead>
         <tbody>
           {rows.map(row => <tr key={row.id} className="border-t border-slate-800">
             {columns.map(([key]) => <td key={key} className="px-3 py-2">{row[key] ?? '—'}</td>)}
-            {onEdit && <td className="px-3 py-2">
-              <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>
+            {hasActions && <td className="px-3 py-2">
+              <div className="flex flex-wrap gap-2">
+                {onEdit && <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>}
+                {onVerify && <button type="button" className={button} aria-label={'Verificar coordenadas de ' + row.name}
+                  onClick={() => onVerify(row)}>Verificar coordenadas</button>}
+              </div>
             </td>}
           </tr>)}
         </tbody>
@@ -176,29 +182,39 @@ function InventoryTable({ columns, rows, onEdit }: {
 }
 
 function EditableSites({ tenant }: { tenant: string }) {
-  const [editor, setEditor] = useState<Row | 'new' | null>(null);
+  const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit' | 'verify'; site: Row } | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
 
-  function saved() {
-    setNotice(editor === 'new' ? 'Site cadastrado.' : 'Site atualizado.');
+  function saved(message: string) {
+    setNotice(message);
     setEditor(null);
     setRevision(previous => previous + 1);
   }
 
   return (
     <div className="space-y-4">
-      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>Novo site</button>}
+      {editor === null && <button type="button" className={button} onClick={() => setEditor({ mode: 'create' })}>Novo site</button>}
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
-      {editor && <PostgresSiteEditor
-        key={editor === 'new' ? 'new' : editor.id}
+      {editor?.mode === 'verify' && <PostgresSiteCoordinates
+        key={editor.site.id}
         tenant={tenant}
-        site={editor === 'new' ? undefined : editor}
+        site={editor.site}
         onCancel={() => setEditor(null)}
-        onSaved={saved}
+        onSaved={() => saved('Coordenadas verificadas.')}
+      />}
+      {editor && editor.mode !== 'verify' && <PostgresSiteEditor
+        key={editor.mode === 'create' ? 'new' : editor.site.id}
+        tenant={tenant}
+        site={editor.mode === 'create' ? undefined : editor.site}
+        onCancel={() => setEditor(null)}
+        onSaved={() => saved(editor.mode === 'create' ? 'Site cadastrado.' : 'Site atualizado.')}
       />}
       <PagedData<Row> key={revision} endpoint="/inventory/sites" render={rows => (
-        <InventoryTable columns={resources[0].columns} rows={rows} onEdit={setEditor} />
+        <InventoryTable columns={resources[0].columns} rows={rows}
+          onEdit={editor ? undefined : site => setEditor({ mode: 'edit', site })}
+          onVerify={editor ? undefined : site => setEditor({ mode: 'verify', site })}
+        />
       )} />
     </div>
   );
