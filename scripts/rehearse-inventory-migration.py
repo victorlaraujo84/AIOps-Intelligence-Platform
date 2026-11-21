@@ -6,7 +6,9 @@ from contextlib import closing
 from datetime import datetime
 import json
 from pathlib import Path
+import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from uuid import UUID
@@ -35,6 +37,11 @@ INVENTORY = {
         "id tenant_id source_asset_id target_asset_id link_type provider_name capacity_mbps is_redundant created_at_utc"
     ),
 }
+
+IDENTITIES = {
+    "users": "id tenant_id email full_name role password_hash is_active created_at_utc last_login_utc",
+}
+SCRYPT_HASH = re.compile(r"scrypt:[0-9a-f]{32}:[0-9a-f]{128}")
 
 BEGIN = r"""
 \set ON_ERROR_STOP on
@@ -68,6 +75,40 @@ CREATE TEMP TABLE aiops_inventory_counts (
 ) ON COMMIT DROP;
 """
 
+IDENTITY_GUARD = """
+SET LOCAL log_error_verbosity = 'terse';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM aiops_admin.schema_migrations WHERE version = 6) THEN
+    RAISE EXCEPTION 'O ensaio de identidades exige a migração PostgreSQL 006';
+  END IF;
+  IF EXISTS (SELECT 1 FROM public.sessions) THEN
+    RAISE EXCEPTION 'O banco de ensaio deve estar sem sessões';
+  END IF;
+END $$;
+"""
+
+VERIFY_IDENTITIES = """
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public.sessions) THEN
+    RAISE EXCEPTION 'O ensaio de identidades não deve trazer sessões';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_temp.aiops_inventory_input AS source
+    CROSS JOIN LATERAL jsonb_populate_record(NULL::public.users, source.document) AS expected
+    JOIN public.users AS actual USING (id)
+    WHERE ROW(actual.tenant_id, actual.email, actual.full_name, actual.role, actual.password_hash,
+              actual.is_active, actual.created_at_utc, actual.last_login_utc)
+       IS DISTINCT FROM ROW(expected.tenant_id, expected.email, expected.full_name, expected.role,
+                            expected.password_hash, expected.is_active, expected.created_at_utc, expected.last_login_utc)
+  ) THEN
+    RAISE EXCEPTION 'Os campos de identidade importados divergem da origem';
+  END IF;
+END $$;
+"""
+
 END = """
 DO $$
 BEGIN
@@ -93,7 +134,7 @@ def convert(table, row, ordinal):
             elif column.endswith("_utc"):
                 if datetime.fromisoformat(value).utcoffset() is None:
                     raise ValueError()
-            elif column in {"coord_verified", "is_redundant"}:
+            elif column in {"coord_verified", "is_redundant", "is_active"}:
                 if value not in (0, 1):
                     raise ValueError()
                 result[column] = bool(value)
@@ -107,6 +148,12 @@ def convert(table, row, ordinal):
         except (AttributeError, TypeError, ValueError):
             raise ValueError(f"{table}, linha {ordinal}, campo {column}: formato incompatível") from None
 
+    if table == "users":
+        password_hash = result["password_hash"]
+        if not isinstance(password_hash, str) or not SCRYPT_HASH.fullmatch(password_hash):
+            raise ValueError(f"users, linha {ordinal}: hash de senha incompatível")
+        if (result["role"] == "super_admin") != (result["tenant_id"] is None):
+            raise ValueError(f"users, linha {ordinal}: papel incompatível com o vínculo de tenant")
     if table == "sites" and result["coord_verified"]:
         lat, lon = result["latitude"], result["longitude"]
         if (
@@ -118,9 +165,13 @@ def convert(table, row, ordinal):
     return result
 
 
-def write_rehearsal(db, output):
+def write_rehearsal(db, output, *, include_identities=False):
     print(BEGIN, file=output)
-    for table, columns in INVENTORY.items():
+    tables = INVENTORY
+    if include_identities:
+        print(IDENTITY_GUARD, file=output)
+        tables = INVENTORY | IDENTITIES
+    for table, columns in tables.items():
         column_names = columns.split()
         names = ", ".join(column_names)
         selected = ", ".join(f"item.{column}" for column in column_names)
@@ -148,8 +199,11 @@ INSERT INTO public.{table} ({names})
 SELECT {selected} FROM pg_temp.aiops_inventory_input AS source
 CROSS JOIN LATERAL jsonb_populate_record(NULL::public.{table}, source.document) AS item;
 INSERT INTO pg_temp.aiops_inventory_counts
-SELECT '{table}', (SELECT count(*) FROM pg_temp.aiops_inventory_input), (SELECT count(*) FROM public.{table});
-TRUNCATE pg_temp.aiops_inventory_input;""", file=output)
+SELECT '{table}', (SELECT count(*) FROM pg_temp.aiops_inventory_input), (SELECT count(*) FROM public.{table});""", file=output)
+
+        if table == "users":
+            print(VERIFY_IDENTITIES, file=output)
+        print("TRUNCATE pg_temp.aiops_inventory_input;", file=output)
 
         if table == "sites":
             print("""
@@ -159,10 +213,50 @@ WHERE coord_verified;""", file=output)
     print(END, file=output)
 
 
+def run_identity_rehearsal(db, project, env_file):
+    command = ["docker", "compose", "--project-name", project, "--profile", "core"]
+    if env_file is not None:
+        command.extend(["--env-file", str(env_file)])
+    command.extend([
+        "exec", "-T", "postgres", "sh", "-ec",
+        'exec psql -XqAt -F "|" -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -f -',
+    ])
+
+    # O SQL sensível segue direto para o cliente, sem spool e sem eco. Descartamos
+    # diagnósticos do psql, que podem incluir valores da operação COPY.
+    with subprocess.Popen(
+        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True, encoding="utf-8",
+    ) as process:
+        try:
+            with process.stdin:
+                write_rehearsal(db, process.stdin, include_identities=True)
+        except BrokenPipeError:
+            raise ValueError("o PostgreSQL encerrou o ensaio; confira o projeto, o schema e o banco vazio") from None
+        rows = process.stdout.read().splitlines()
+        if process.wait() != 0:
+            raise ValueError("o PostgreSQL recusou o ensaio; confira o projeto, os vínculos e o schema 006")
+
+    expected = set(INVENTORY) | set(IDENTITIES)
+    for row in rows:
+        match = re.fullmatch(r"([a-z_]+)\|([0-9]+)\|([0-9]+)", row)
+        if not match or match[1] not in expected or match[2] != match[3]:
+            raise ValueError("resposta inesperada no relatório de contagens")
+        expected.remove(match[1])
+    if expected:
+        raise ValueError("relatório de contagens incompleto")
+    print("\n".join(rows))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path, help="backup SQLite consistente e separado da instância ativa")
-    snapshot = parser.parse_args().snapshot.resolve()
+    parser.add_argument("--identity-project", help="inclui usuários via psql no projeto Compose descartável")
+    parser.add_argument("--env-file", type=Path, help="arquivo de variáveis do projeto Compose do ensaio")
+    args = parser.parse_args()
+    if args.env_file is not None and args.identity_project is None:
+        parser.error("--env-file exige --identity-project")
+    snapshot = args.snapshot.resolve()
     if not snapshot.is_file() or any(Path(str(snapshot) + suffix).exists() for suffix in ("-wal", "-journal")):
         parser.error("forneça um backup SQLite completo, sem arquivos WAL ou journal")
     try:
@@ -170,6 +264,9 @@ def main():
             db.row_factory = sqlite3.Row
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("backup SQLite falhou na verificação de integridade")
+            if args.identity_project is not None:
+                run_identity_rehearsal(db, args.identity_project, args.env_file)
+                return
             # Prepara toda a entrada antes de tocar o PostgreSQL. O arquivo é temporário e privado.
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as script:
                 write_rehearsal(db, script)
@@ -177,7 +274,9 @@ def main():
                 for line in script:
                     sys.stdout.write(line)
     except sqlite3.Error:
-        parser.exit(1, "Falha ao ler o inventário do backup SQLite. Confira a versão do schema.\n")
+        parser.exit(1, "Falha ao ler o backup SQLite. Confira a versão do schema.\n")
+    except OSError:
+        parser.exit(1, "Falha de entrada ou saída. Confira o backup, o Docker e o projeto Compose.\n")
     except ValueError as error:
         parser.exit(1, f"{error}.\n")
 
