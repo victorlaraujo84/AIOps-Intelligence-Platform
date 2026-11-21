@@ -110,7 +110,19 @@ GRANT aiops_authenticator TO aiops_auth_runtime;
 
 Forneça `AIOPS_POSTGRES_AUTH_DSN` e um `AIOPS_POSTGRES_AUTH_SESSION_SECRET` próprio, aleatório, de pelo menos 32 bytes. Os valores devem ficar no ambiente protegido. Sem essas configurações, a autenticação FastAPI fica desabilitada. O serviço rejeita o uso da conta administrativa de migração.
 
-Os endpoints internos são `POST /api/v1/auth/login`, `GET /api/v1/auth/me` e `POST /api/v1/auth/logout`. Use o token Bearer devolvido pelo login. Contas vinculadas a tenant recebem seu próprio contexto. Um administrador global começa com o tenant ativo vazio, até existir um fluxo autorizado de seleção nesse backend. Mantenha as rotas na rede interna de homologação. O console Web segue autenticando pelo SQLite.
+Os endpoints internos são `POST /api/v1/auth/login`, `GET /api/v1/auth/me` e `POST /api/v1/auth/logout`. Use o token Bearer devolvido pelo login. Contas vinculadas a tenant recebem seu próprio contexto. Um administrador global começa com o tenant ativo vazio e seleciona um tenant ativo via `POST /api/v1/auth/switch-tenant`. Mantenha as rotas na rede interna de homologação. O console Web segue autenticando pelo SQLite.
+
+### Inventário FastAPI em homologação
+
+Com as migrações até a 008 e a autenticação PostgreSQL já configurada, provisione uma conta de leitura distinta no `psql`:
+
+```sql
+CREATE ROLE aiops_inventory_runtime LOGIN NOINHERIT;
+GRANT aiops_tenant_reader TO aiops_inventory_runtime WITH SET TRUE;
+\password aiops_inventory_runtime
+```
+
+Configure `AIOPS_POSTGRES_INVENTORY_DSN` para essa conta. A API assume o papel de leitura e define o tenant somente para a transação. O contexto vem da sessão Bearer, e o banco aplica as políticas RLS. As rotas de sites, ativos e serviços sob `GET /api/v1/inventory/{resource}` aceitam `limit` e `after` e devolvem `items` e `next_after`. O Web ativo continua usando SQLite para seu inventário.
 
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
