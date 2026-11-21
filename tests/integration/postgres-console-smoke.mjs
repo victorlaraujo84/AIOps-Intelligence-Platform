@@ -856,6 +856,58 @@ if (process.argv.includes('--service-delete')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--audit-read')) {
+  const viewer = client();
+  const other = client();
+  const global = client();
+  const path = '/inventory/audit';
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, name, password = name) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const page = async (session, tenant, after, limit = 1) => {
+    const query = new URLSearchParams({ limit: String(limit), ...(after ? { after } : {}), tenant_id: tenantB });
+    const response = await session(path + '?' + query, { headers: scope(tenant) });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    return response.json();
+  };
+  assert.equal((await viewer(path, { headers: scope(tenantA) })).status, 401);
+  assert.equal((await login(viewer, 'viewer')).status, 204);
+  assert.equal((await login(other, 'admin-b', 'admin')).status, 204);
+  assert.equal((await login(global, 'global')).status, 204);
+  assert.equal((await viewer(path)).status, 422);
+  assert.equal((await viewer(path, { headers: scope(tenantB) })).status, 409);
+  assert.equal((await global(path, { headers: scope(tenantA) })).status, 409);
+  assert.equal((await viewer(path + '?after=invalid', { headers: scope(tenantA) })).status, 422);
+  assert.equal((await viewer(path + '?limit=101', { headers: scope(tenantA) })).status, 422);
+  assert.equal((await viewer(path, { data: {}, headers: scope(tenantA) })).status, 404);
+
+  const before = '2025-01-03T00:00:00+00:00~ffffffff-ffff-ffff-ffff-ffffffffffff';
+  const first = await page(viewer, tenantA, before);
+  assert.deepEqual(first.items.map(row => row.action), ['AUDIT_FEED_NEWER_ID']);
+  assert.deepEqual(Object.keys(first.items[0]).sort(),
+    ['action', 'actor_role', 'created_at_utc', 'id', 'resource_id', 'resource_type', 'tenant_id']);
+  assert.equal(first.items[0].tenant_id, tenantA);
+  assert.ok(first.next_after);
+  const second = await page(viewer, tenantA, first.next_after);
+  assert.deepEqual(second.items.map(row => row.action), ['AUDIT_FEED_OLDER_ID']);
+  assert.ok(second.next_after);
+  const last = await page(viewer, tenantA, second.next_after);
+  assert.deepEqual(last.items.map(row => row.action), ['AUDIT_FEED_OLDER_TIME']);
+  assert.equal(last.next_after, null);
+
+  assert.deepEqual((await page(other, tenantB, before, 10)).items.map(row => row.action), ['AUDIT_FEED_FOREIGN']);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await global(path, { headers: scope(tenantA) })).status, 409);
+  assert.deepEqual((await page(global, tenantB, before, 10)).items.map(row => row.action), ['AUDIT_FEED_FOREIGN']);
+  for (const session of [viewer, other, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Trilha de auditoria por HTTPS, paginação, escopo da sessão e campos permitidos verificados.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);

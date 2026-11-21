@@ -449,6 +449,33 @@ jobs:
           SQL
           )
           test "$result" = '1|1|1|1'
+      - name: Validar leitura de auditoria no piloto
+        shell: bash
+        run: |
+          docker compose --profile core exec -T postgres sh -ec '
+            exec psql -Xq -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          INSERT INTO audit_logs (id, tenant_id, actor_email, actor_role, action, resource_type, resource_id,
+                                  details_json, ip_address, created_at_utc)
+          VALUES
+            ('00000000-0000-4000-b000-000000000a01', '00000000-0000-4000-b000-000000000001',
+             'audit-fixture@example.invalid', 'tenant_admin', 'AUDIT_FEED_OLDER_ID', 'site', 'site-a',
+             '{"source":"fixture"}', '192.0.2.1', '2025-01-02 00:00:00.123456+00'),
+            ('00000000-0000-4000-b000-000000000a02', '00000000-0000-4000-b000-000000000001',
+             NULL, 'tenant_operator', 'AUDIT_FEED_NEWER_ID', 'site', 'site-b',
+             '{}', NULL, '2025-01-02 00:00:00.123456+00'),
+            ('00000000-0000-4000-b000-000000000a03', '00000000-0000-4000-b000-000000000001',
+             NULL, 'tenant_admin', 'AUDIT_FEED_OLDER_TIME', 'site', 'site-c',
+             '{}', NULL, '2025-01-02 00:00:00.123455+00'),
+            ('00000000-0000-4000-b000-000000000a04', '00000000-0000-4000-b000-000000000003',
+             NULL, 'tenant_admin', 'AUDIT_FEED_FOREIGN', 'site', 'site-d',
+             '{}', NULL, '2025-01-02 00:00:00+00'),
+            ('00000000-0000-4000-b000-000000000a05', NULL,
+             NULL, 'super_admin', 'AUDIT_FEED_GLOBAL', 'system', 'global',
+             '{}', NULL, '2025-01-02 00:00:00+00');
+          SQL
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --audit-read
       - name: Validar cadastro de tenants no piloto
         shell: bash
         run: |

@@ -21,6 +21,7 @@ type Column = readonly [key: string, label: string];
 
 const button = 'rounded-md border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:opacity-60';
 const input = 'w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100';
+const auditTime = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'medium' });
 const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Column[] }> = [
   { id: 'sites', name: 'Sites', columns: [['code', 'Código'], ['name', 'Nome'], ['municipality', 'Município'], ['uf', 'UF'], ['coord_precision', 'Coordenadas']] },
   { id: 'assets', name: 'Ativos', columns: [['name', 'Nome'], ['hostname', 'Hostname'], ['domain', 'Domínio'], ['operational_state', 'Estado']] },
@@ -29,6 +30,10 @@ const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Col
   { id: 'asset-categories', name: 'Categorias', columns: [['code', 'Código'], ['label', 'Rótulo'], ['domain', 'Domínio']] },
   { id: 'concessions', name: 'Concessões', columns: [['code', 'Código'], ['name', 'Nome'], ['region', 'Região']] },
   { id: 'locality-types', name: 'Tipos de localidade', columns: [['code', 'Código'], ['label', 'Rótulo']] },
+  { id: 'audit', name: 'Auditoria', columns: [
+    ['created_at_utc', 'Horário'], ['action', 'Ação'], ['actor_role', 'Papel do autor'],
+    ['resource_type', 'Tipo de recurso'], ['resource_id', 'Identificador do recurso'],
+  ] },
 ];
 
 function SignIn({ onLogin }: { onLogin: (identity: Identity) => void }) {
@@ -494,6 +499,11 @@ export default function PostgresConsole() {
                     render={(rows, onRemove, disabled) => (
                       <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} removalResource="concessão" />
                     )} />
+                ) : resource.id === 'audit' ? (
+                  <PagedData<Row> key="audit" endpoint="/inventory/audit" expectedTenant={identity.active_tenant_id}
+                    render={rows => <InventoryTable columns={resource.columns} rows={rows.map(row => ({
+                      ...row, created_at_utc: auditTime.format(new Date(String(row.created_at_utc))),
+                    }))} />} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />
                 ) : resource.id === 'topology' ? (
