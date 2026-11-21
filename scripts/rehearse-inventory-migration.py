@@ -51,6 +51,8 @@ BEGIN;
 SET LOCAL TIME ZONE 'UTC';
 SET LOCAL search_path = public, pg_catalog;
 SET LOCAL lock_timeout = '5s';
+SET LOCAL log_error_verbosity = 'terse';
+SET LOCAL log_min_error_statement = 'panic';
 
 DO $$
 BEGIN
@@ -76,35 +78,19 @@ CREATE TEMP TABLE aiops_inventory_counts (
 """
 
 IDENTITY_GUARD = """
-SET LOCAL log_error_verbosity = 'terse';
-
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM aiops_admin.schema_migrations WHERE version = 6) THEN
     RAISE EXCEPTION 'O ensaio de identidades exige a migração PostgreSQL 006';
   END IF;
-  IF EXISTS (SELECT 1 FROM public.sessions) THEN
-    RAISE EXCEPTION 'O banco de ensaio deve estar sem sessões';
-  END IF;
 END $$;
 """
 
-VERIFY_IDENTITIES = """
+VERIFY_NO_SESSIONS = """
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM public.sessions) THEN
-    RAISE EXCEPTION 'O ensaio de identidades não deve trazer sessões';
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM pg_temp.aiops_inventory_input AS source
-    CROSS JOIN LATERAL jsonb_populate_record(NULL::public.users, source.document) AS expected
-    JOIN public.users AS actual USING (id)
-    WHERE ROW(actual.tenant_id, actual.email, actual.full_name, actual.role, actual.password_hash,
-              actual.is_active, actual.created_at_utc, actual.last_login_utc)
-       IS DISTINCT FROM ROW(expected.tenant_id, expected.email, expected.full_name, expected.role,
-                            expected.password_hash, expected.is_active, expected.created_at_utc, expected.last_login_utc)
-  ) THEN
-    RAISE EXCEPTION 'Os campos de identidade importados divergem da origem';
+    RAISE EXCEPTION 'O banco de ensaio deve estar sem sessões';
   END IF;
 END $$;
 """
@@ -170,11 +156,13 @@ def write_rehearsal(db, output, *, include_identities=False):
     tables = INVENTORY
     if include_identities:
         print(IDENTITY_GUARD, file=output)
+        print(VERIFY_NO_SESSIONS, file=output)
         tables = INVENTORY | IDENTITIES
     for table, columns in tables.items():
         column_names = columns.split()
         names = ", ".join(column_names)
         selected = ", ".join(f"item.{column}" for column in column_names)
+        actual = ", ".join(f"actual.{column}" for column in column_names)
         print(f"""
 DO $$
 BEGIN
@@ -198,22 +186,51 @@ COPY pg_temp.aiops_inventory_input (document) FROM STDIN;""", file=output)
 INSERT INTO public.{table} ({names})
 SELECT {selected} FROM pg_temp.aiops_inventory_input AS source
 CROSS JOIN LATERAL jsonb_populate_record(NULL::public.{table}, source.document) AS item;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_temp.aiops_inventory_input AS source
+    CROSS JOIN LATERAL jsonb_populate_record(NULL::public.{table}, source.document) AS item
+    LEFT JOIN public.{table} AS actual ON actual.id = item.id
+    WHERE actual.id IS NULL OR ROW({actual}) IS DISTINCT FROM ROW({selected})
+  ) THEN
+    RAISE EXCEPTION 'Campos em {table} divergem da origem';
+  END IF;
+END $$;
+
 INSERT INTO pg_temp.aiops_inventory_counts
 SELECT '{table}', (SELECT count(*) FROM pg_temp.aiops_inventory_input), (SELECT count(*) FROM public.{table});""", file=output)
 
-        if table == "users":
-            print(VERIFY_IDENTITIES, file=output)
         print("TRUNCATE pg_temp.aiops_inventory_input;", file=output)
 
         if table == "sites":
             print("""
 UPDATE public.sites
 SET geom = ST_SetSRID(ST_MakePoint(longitude, latitude), 4326)::geography
-WHERE coord_verified;""", file=output)
+WHERE coord_verified;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM public.sites
+    WHERE (NOT coord_verified AND geom IS NOT NULL)
+       OR (coord_verified AND (
+         geom IS NULL OR ST_SRID(geom::geometry) <> 4326
+         OR ST_X(geom::geometry) IS DISTINCT FROM longitude
+         OR ST_Y(geom::geometry) IS DISTINCT FROM latitude
+       ))
+  ) THEN
+    RAISE EXCEPTION 'Geometria dos sites diverge das coordenadas verificadas';
+  END IF;
+END $$;""", file=output)
+    if include_identities:
+        print(VERIFY_NO_SESSIONS, file=output)
     print(END, file=output)
 
 
-def run_identity_rehearsal(db, project, env_file):
+def run_compose_rehearsal(db, project, env_file, *, include_identities):
     command = ["docker", "compose", "--project-name", project, "--profile", "core"]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
@@ -230,14 +247,16 @@ def run_identity_rehearsal(db, project, env_file):
     ) as process:
         try:
             with process.stdin:
-                write_rehearsal(db, process.stdin, include_identities=True)
+                write_rehearsal(db, process.stdin, include_identities=include_identities)
         except BrokenPipeError:
             raise ValueError("o PostgreSQL encerrou o ensaio; confira o projeto, o schema e o banco vazio") from None
         rows = process.stdout.read().splitlines()
         if process.wait() != 0:
-            raise ValueError("o PostgreSQL recusou o ensaio; confira o projeto, os vínculos e o schema 006")
+            raise ValueError("o PostgreSQL recusou o ensaio; confira o projeto, os vínculos e as migrações")
 
-    expected = set(INVENTORY) | set(IDENTITIES)
+    expected = set(INVENTORY)
+    if include_identities:
+        expected.update(IDENTITIES)
     for row in rows:
         match = re.fullmatch(r"([a-z_]+)\|([0-9]+)\|([0-9]+)", row)
         if not match or match[1] not in expected or match[2] != match[3]:
@@ -251,11 +270,16 @@ def run_identity_rehearsal(db, project, env_file):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("snapshot", type=Path, help="backup SQLite consistente e separado da instância ativa")
-    parser.add_argument("--identity-project", help="inclui usuários via psql no projeto Compose descartável")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--identity-project", help="inclui usuários via psql no projeto Compose descartável")
+    mode.add_argument("--inventory-project", help="envia apenas o inventário ao projeto Compose descartável")
     parser.add_argument("--env-file", type=Path, help="arquivo de variáveis do projeto Compose do ensaio")
     args = parser.parse_args()
-    if args.env_file is not None and args.identity_project is None:
-        parser.error("--env-file exige --identity-project")
+    project = args.identity_project if args.identity_project is not None else args.inventory_project
+    if project is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
+        parser.error("nome de projeto Compose inválido")
+    if args.env_file is not None and project is None:
+        parser.error("--env-file exige um projeto Compose de ensaio")
     snapshot = args.snapshot.resolve()
     if not snapshot.is_file() or any(Path(str(snapshot) + suffix).exists() for suffix in ("-wal", "-journal")):
         parser.error("forneça um backup SQLite completo, sem arquivos WAL ou journal")
@@ -264,8 +288,8 @@ def main():
             db.row_factory = sqlite3.Row
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("backup SQLite falhou na verificação de integridade")
-            if args.identity_project is not None:
-                run_identity_rehearsal(db, args.identity_project, args.env_file)
+            if project is not None:
+                run_compose_rehearsal(db, project, args.env_file, include_identities=args.identity_project is not None)
                 return
             # Prepara toda a entrada antes de tocar o PostgreSQL. O arquivo é temporário e privado.
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as script:
