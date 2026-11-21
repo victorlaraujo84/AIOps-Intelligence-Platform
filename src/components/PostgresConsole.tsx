@@ -7,6 +7,7 @@ import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.t
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
 import { PostgresConnectorCreate, PostgresConnectorImport, PostgresOpenMeteoCreate, PostgresOpenMeteoActions } from './PostgresConnectorForms.tsx';
 import { PostgresIncidentDetail } from './PostgresIncidentDetail.tsx';
+import { PostgresWebhooks } from './PostgresWebhooks.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { isWritableCatalog, PostgresCatalogCreate } from './PostgresCatalogCreate.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
@@ -447,6 +448,8 @@ export default function PostgresConsole() {
   const [incidentWrites, setIncidentWrites] = useState(false);
   const [connectorWrites, setConnectorWrites] = useState(false);
   const [itsm, setItsm] = useState(false);
+  const [notifications, setNotifications] = useState(false);
+  const [notificationWrites, setNotificationWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [userAdmin, setUserAdmin] = useState(false);
@@ -456,7 +459,7 @@ export default function PostgresConsole() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; connector_writes: boolean; itsm: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; connector_writes: boolean; notifications: boolean; notification_writes: boolean; itsm: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
@@ -465,6 +468,8 @@ export default function PostgresConsole() {
         setIncidentWrites(status.incident_writes);
         setConnectorWrites(status.connector_writes);
         setItsm(status.itsm);
+        setNotifications(status.notifications);
+        setNotificationWrites(status.notification_writes);
         setUserAdmin(status.user_admin);
         setTenantCreation(status.tenant_creation);
       })
@@ -526,7 +531,10 @@ export default function PostgresConsole() {
 
   const isAdmin = identity?.role === 'super_admin' || identity?.role === 'tenant_admin';
   const mayAdministerUsers = userAdmin && isAdmin;
-  const resource = selectedResource.id === 'users' && !mayAdministerUsers ? resources[0] : selectedResource;
+  const mayViewNotifications = notifications && isAdmin;
+  const unavailableResource = (selectedResource.id === 'users' && !mayAdministerUsers)
+    || (selectedResource.id === 'webhooks' && !mayViewNotifications);
+  const resource = unavailableResource ? resources[0] : selectedResource;
   const mapView = resource.id === 'map';
   const mayWrite = identity !== null
     && ['super_admin', 'tenant_admin', 'tenant_operator'].includes(identity.role);
@@ -561,6 +569,7 @@ export default function PostgresConsole() {
               <section key={identity.active_tenant_id} className="space-y-4">
                 <nav aria-label="Inventário e mapa" className="flex flex-wrap gap-2">
                   {[...resources, { id: 'map', name: 'Mapa', columns: [] },
+                    ...(mayViewNotifications ? [{ id: 'webhooks', name: 'Webhooks', columns: [] }] : []),
                     ...(mayAdministerUsers ? [{ id: 'users', name: 'Usuários', columns: [] }] : [])].map(item =>
                     <button key={item.id} aria-pressed={item.id === resource.id} className={button} onClick={() => setResource(item)}>{item.name}</button>
                   )}
@@ -590,6 +599,8 @@ export default function PostgresConsole() {
                     render={rows => <InventoryTable columns={resource.columns} rows={rows.map(row => ({
                       ...row, created_at_utc: recordTime.format(new Date(String(row.created_at_utc))),
                     }))} />} />
+                ) : resource.id === 'webhooks' ? (
+                  <PostgresWebhooks tenant={identity.active_tenant_id} mayWrite={isAdmin && notificationWrites} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />
                 ) : resource.id === 'topology' ? (

@@ -49,7 +49,8 @@ WITH known(version, filename, sha256) AS (
     (30, '030_authenticated_event_ingest.sql', :'event_ingest_sha'),
     (31, '031_authenticated_telemetry_ingest.sql', :'telemetry_ingest_sha'),
     (32, '032_open_meteo_sync.sql', :'open_meteo_sha'),
-    (33, '033_open_meteo_scheduling.sql', :'weather_schedule_sha')
+    (33, '033_open_meteo_scheduling.sql', :'weather_schedule_sha'),
+    (34, '034_incident_webhooks.sql', :'webhooks_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -88,13 +89,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 30), false) AS has_event_ingest,
   COALESCE(bool_or(m.version = 31), false) AS has_telemetry_ingest,
   COALESCE(bool_or(m.version = 32), false) AS has_open_meteo,
-  COALESCE(bool_or(m.version = 33), false) AS has_weather_schedule
+  COALESCE(bool_or(m.version = 33), false) AS has_weather_schedule,
+  COALESCE(bool_or(m.version = 34), false) AS has_webhooks
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_webhooks
+  \if :has_weather_schedule
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 034 sem versão 033'; END $$;
+  \endif
 \endif
 
 \if :has_weather_schedule
@@ -568,6 +577,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../033_open_meteo_scheduling.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (33, '033_open_meteo_scheduling.sql', :'weather_schedule_sha');
+\endif
+
+\if :has_webhooks
+\else
+  \ir ../034_incident_webhooks.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (34, '034_incident_webhooks.sql', :'webhooks_sha');
 \endif
 
 COMMIT;
