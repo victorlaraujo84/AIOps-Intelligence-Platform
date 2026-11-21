@@ -192,14 +192,16 @@ jobs:
           docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core \
             up -d --no-deps --force-recreate --wait web
           NODE_EXTRA_CA_CERTS="$ca" node tests/integration/postgres-console-smoke.mjs
-      - name: Validar cadastro, edição e coordenadas de sites no piloto
+      - name: Validar gravação de sites e ativos pelo piloto
         shell: bash
         run: |
-          AIOPS_PILOT_HTTPS_PORT=443 AIOPS_POSTGRES_PILOT_WRITE_SITES=true \
+          AIOPS_PILOT_HTTPS_PORT=443 AIOPS_POSTGRES_PILOT_WRITE_SITES=true AIOPS_POSTGRES_PILOT_WRITE_ASSETS=true \
             docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postgres-pilot.yaml \
               --profile core up -d --no-deps --force-recreate --wait web proxy
           NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
             node tests/integration/postgres-console-smoke.mjs --site-writes
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --asset-writes
           counts=$(docker compose --profile core exec -T postgres sh -ec '
             exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
           ' <<'SQL'
@@ -215,6 +217,17 @@ jobs:
           SQL
           )
           test "$counts" = $'SITE_COORDS_VERIFIED|1\nSITE_CREATED|1\nSITE_UPDATED|1'
+          asset_counts=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT a.action, count(*)
+          FROM assets t
+          JOIN audit_logs a ON a.tenant_id = t.tenant_id AND a.resource_id = t.id::text
+          WHERE t.name IN ('Ativo do piloto atualizado', 'Ativo lógico do piloto') AND a.resource_type = 'asset'
+          GROUP BY a.action ORDER BY a.action;
+          SQL
+          )
+          test "$asset_counts" = $'ASSET_CREATED|2\nASSET_UPDATED|1'
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |

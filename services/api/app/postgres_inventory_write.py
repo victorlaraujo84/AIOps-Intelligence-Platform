@@ -3,15 +3,24 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import HTTPException
+from fastapi import Depends, Header, HTTPException
 from pydantic import StringConstraints
 
-from .postgres_auth import AUTH_HEADERS
+from .postgres_auth import AUTH_HEADERS, get_current_session
 
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Criticality = Literal["critica", "alta", "media", "baixa"]
 Domain = Annotated[str, StringConstraints(strip_whitespace=True, to_lower=True, min_length=1, max_length=80)]
+
+
+def inventory_write_identity(
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    expected_tenant: Annotated[UUID | None, Header(alias="X-AIOps-Expected-Tenant")] = None,
+) -> asyncpg.Record:
+    if expected_tenant is not None and expected_tenant != identity["active_tenant_id"]:
+        raise HTTPException(409, "O tenant ativo mudou. Atualize a sessão antes de gravar.", headers=AUTH_HEADERS)
+    return identity
 
 
 @asynccontextmanager

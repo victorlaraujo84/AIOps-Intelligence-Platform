@@ -4,12 +4,12 @@ from typing import Annotated
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS, inventory_role_pool
-from .postgres_inventory_write import Criticality, Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Criticality, Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction
 
 
 router = APIRouter(prefix="/api/v1/inventory/sites", tags=["inventory"])
@@ -101,20 +101,11 @@ def get_site_write_pool(request: Request) -> asyncpg.Pool:
     return pool
 
 
-def site_write_identity(
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
-    expected_tenant: Annotated[UUID | None, Header(alias="X-AIOps-Expected-Tenant")] = None,
-) -> asyncpg.Record:
-    if expected_tenant is not None and expected_tenant != identity["active_tenant_id"]:
-        raise HTTPException(409, "O tenant ativo mudou. Atualize a sessão antes de gravar.", headers=AUTH_HEADERS)
-    return identity
-
-
 @router.post("", status_code=201)
 async def create_site(
     body: CreateSite,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(site_write_identity)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
@@ -139,7 +130,7 @@ async def update_site(
     site_id: UUID,
     body: UpdateSite,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(site_write_identity)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
     changes = body.model_dump(exclude_unset=True)

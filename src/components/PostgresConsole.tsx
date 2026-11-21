@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
+import { PostgresAssetEditor } from './PostgresAssetEditor.tsx';
 import { PostgresSiteCoordinates, PostgresSiteEditor } from './PostgresSiteEditor.tsx';
 
 type Tenant = { id: string; name: string; slug: string };
@@ -220,6 +221,33 @@ function EditableSites({ tenant }: { tenant: string }) {
   );
 }
 
+function EditableAssets({ tenant, columns }: { tenant: string; columns: readonly Column[] }) {
+  const [editor, setEditor] = useState<Row | 'new' | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
+
+  return (
+    <div className="space-y-4">
+      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>Novo ativo</button>}
+      {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
+      {editor && <PostgresAssetEditor
+        key={editor === 'new' ? 'new' : editor.id}
+        tenant={tenant}
+        asset={editor === 'new' ? undefined : editor}
+        onCancel={() => setEditor(null)}
+        onSaved={() => {
+          setNotice(editor === 'new' ? 'Ativo cadastrado.' : 'Ativo atualizado.');
+          setEditor(null);
+          setRevision(previous => previous + 1);
+        }}
+      />}
+      <PagedData<Row> key={revision} endpoint="/inventory/assets" render={rows => (
+        <InventoryTable columns={columns} rows={rows} onEdit={editor ? undefined : setEditor} />
+      )} />
+    </div>
+  );
+}
+
 function SiteMap({ rows }: { rows: Marker[] }) {
   const element = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -270,16 +298,18 @@ export default function PostgresConsole() {
   const [unavailable, setUnavailable] = useState('');
   const [showMainLink, setShowMainLink] = useState(false);
   const [siteWrites, setSiteWrites] = useState(false);
+  const [assetWrites, setAssetWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
+        setAssetWrites(status.asset_writes);
       })
       .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
@@ -326,7 +356,7 @@ export default function PostgresConsole() {
   }
 
   const mapView = resource.id === 'map';
-  const mayEditSites = siteWrites && identity !== null
+  const mayWrite = identity !== null
     && ['super_admin', 'tenant_admin', 'tenant_operator'].includes(identity.role);
 
   return (
@@ -359,8 +389,10 @@ export default function PostgresConsole() {
                 <h2 className="text-lg font-semibold">{resource.name}</h2>
                 {mapView ? (
                   <PagedData<Marker> key="map" endpoint="/inventory/sites/map?west=-180&south=-90&east=180&north=90" render={rows => <SiteMap rows={rows} />} />
-                ) : resource.id === 'sites' && mayEditSites ? (
+                ) : resource.id === 'sites' && mayWrite && siteWrites ? (
                   <EditableSites tenant={identity.active_tenant_id} />
+                ) : resource.id === 'assets' && mayWrite && assetWrites ? (
+                  <EditableAssets tenant={identity.active_tenant_id} columns={resource.columns} />
                 ) : (
                   <PagedData<Row> key={resource.id} endpoint={'/inventory/' + resource.id} render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 )}

@@ -7,9 +7,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS, inventory_role_pool
-from .postgres_inventory_write import Criticality, Domain, Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Criticality, Domain, Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction
 
 
 router = APIRouter(prefix="/api/v1/inventory/assets", tags=["inventory"])
@@ -111,7 +111,7 @@ async def get_asset_category(connection: asyncpg.Connection, tenant: UUID, categ
 async def create_asset(
     body: CreateAsset,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):
@@ -143,7 +143,7 @@ async def update_asset(
     asset_id: UUID,
     body: UpdateAsset,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
 ):
     changes = body.model_dump(exclude_unset=True)

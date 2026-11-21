@@ -64,6 +64,7 @@ function forward(res: Response, result: Awaited<ReturnType<typeof callCore>>) {
 
 export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, siteWrites: boolean): Router {
   const router = Router();
+  const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
   router.use((req, res, next) => {
@@ -81,7 +82,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites });
+    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites });
   });
 
   router.post('/login', async (req, res) => {
@@ -142,24 +143,30 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     }
   });
 
+  function writeInventory(resource: 'sites' | 'assets', suffix: '' | '/verify-coords' = '') {
+    return async (req: Request, res: Response) => {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.id;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de inventário ou tenant inválido.' });
+        return;
+      }
+      const base = '/inventory/' + resource;
+      const path = id ? base + '/' + id + suffix : base;
+      forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
+    };
+  }
+
   if (siteWrites) {
-    function writeSite(suffix: '' | '/verify-coords' = '') {
-      return async (req: Request, res: Response) => {
-        const token = authenticated(req, res);
-        if (!token) return;
-        const expected = req.get('X-AIOps-Expected-Tenant');
-        const id = req.params.siteId;
-        if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
-          res.status(422).json({ error: 'Identificador de site ou tenant inválido.' });
-          return;
-        }
-        const path = id ? '/inventory/sites/' + id + suffix : '/inventory/sites';
-        forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
-      };
-    }
-    router.post('/inventory/sites', writeSite());
-    router.patch('/inventory/sites/:siteId', writeSite());
-    router.patch('/inventory/sites/:siteId/verify-coords', writeSite('/verify-coords'));
+    router.post('/inventory/sites', writeInventory('sites'));
+    router.patch('/inventory/sites/:id', writeInventory('sites'));
+    router.patch('/inventory/sites/:id/verify-coords', writeInventory('sites', '/verify-coords'));
+  }
+  if (assetWrites) {
+    router.post('/inventory/assets', writeInventory('assets'));
+    router.patch('/inventory/assets/:id', writeInventory('assets'));
   }
 
   router.get('/inventory/:resource', async (req, res) => {
