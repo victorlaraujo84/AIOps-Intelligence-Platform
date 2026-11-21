@@ -1,36 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
-
-const ROOT = '/api/postgres-console';
-
-class ConsoleError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-  }
-}
-
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(ROOT + path, { credentials: 'same-origin', ...options });
-  if (response.status === 204) return undefined as T;
-  if (!response.ok) {
-    const data = await response.json().catch(() => null);
-    throw new ConsoleError(response.status, data?.error || 'Falha ao consultar o console PostgreSQL.');
-  }
-  return response.json();
-}
-
-function post<T>(path: string, data: object = {}) {
-  return request<T>(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof ConsoleError ? error.message : 'Não foi possível acessar o console PostgreSQL.';
-}
+import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
+import { PostgresSiteEditor } from './PostgresSiteEditor.tsx';
 
 type Tenant = { id: string; name: string; slug: string };
 type Identity = { id: string; full_name: string; role: string; active_tenant_id: string | null };
@@ -176,19 +148,58 @@ function PagedData<T extends { id: string }>({ endpoint, render }: { endpoint: s
   );
 }
 
-function InventoryTable({ columns, rows }: { columns: readonly Column[]; rows: Row[] }) {
+function InventoryTable({ columns, rows, onEdit }: {
+  columns: readonly Column[];
+  rows: Row[];
+  onEdit?: (row: Row) => void;
+}) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm">
         <thead className="bg-slate-900 text-slate-300">
-          <tr>{columns.map(([key, label]) => <th key={key} scope="col" className="px-3 py-2">{label}</th>)}</tr>
+          <tr>
+            {columns.map(([key, label]) => <th key={key} scope="col" className="px-3 py-2">{label}</th>)}
+            {onEdit && <th scope="col" className="px-3 py-2">Ações</th>}
+          </tr>
         </thead>
         <tbody>
           {rows.map(row => <tr key={row.id} className="border-t border-slate-800">
             {columns.map(([key]) => <td key={key} className="px-3 py-2">{row[key] ?? '—'}</td>)}
+            {onEdit && <td className="px-3 py-2">
+              <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>
+            </td>}
           </tr>)}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function EditableSites({ tenant }: { tenant: string }) {
+  const [editor, setEditor] = useState<Row | 'new' | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
+
+  function saved() {
+    setNotice(editor === 'new' ? 'Site cadastrado.' : 'Site atualizado.');
+    setEditor(null);
+    setRevision(previous => previous + 1);
+  }
+
+  return (
+    <div className="space-y-4">
+      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>Novo site</button>}
+      {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
+      {editor && <PostgresSiteEditor
+        key={editor === 'new' ? 'new' : editor.id}
+        tenant={tenant}
+        site={editor === 'new' ? undefined : editor}
+        onCancel={() => setEditor(null)}
+        onSaved={saved}
+      />}
+      <PagedData<Row> key={revision} endpoint="/inventory/sites" render={rows => (
+        <InventoryTable columns={resources[0].columns} rows={rows} onEdit={setEditor} />
+      )} />
     </div>
   );
 }
@@ -242,14 +253,18 @@ export default function PostgresConsole() {
   const [checking, setChecking] = useState(true);
   const [unavailable, setUnavailable] = useState('');
   const [showMainLink, setShowMainLink] = useState(false);
+  const [siteWrites, setSiteWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean }>('/status', { signal: controller.signal })
-      .then(status => setShowMainLink(!status.pilot_only))
+    void request<{ pilot_only: boolean; site_writes: boolean }>('/status', { signal: controller.signal })
+      .then(status => {
+        setShowMainLink(!status.pilot_only);
+        setSiteWrites(status.site_writes);
+      })
       .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
       .then(setIdentity)
@@ -295,6 +310,8 @@ export default function PostgresConsole() {
   }
 
   const mapView = resource.id === 'map';
+  const mayEditSites = siteWrites && identity !== null
+    && ['super_admin', 'tenant_admin', 'tenant_operator'].includes(identity.role);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -326,6 +343,8 @@ export default function PostgresConsole() {
                 <h2 className="text-lg font-semibold">{resource.name}</h2>
                 {mapView ? (
                   <PagedData<Marker> key="map" endpoint="/inventory/sites/map?west=-180&south=-90&east=180&north=90" render={rows => <SiteMap rows={rows} />} />
+                ) : resource.id === 'sites' && mayEditSites ? (
+                  <EditableSites tenant={identity.active_tenant_id} />
                 ) : (
                   <PagedData<Row> key={resource.id} endpoint={'/inventory/' + resource.id} render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 )}

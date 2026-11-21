@@ -5,6 +5,7 @@ const COOKIE_NAME = '__Host-aiops_pg_session';
 const COOKIE_OPTIONS: CookieOptions = { httpOnly: true, secure: true, sameSite: 'strict', path: '/' };
 const API = 'http://api:8000/api/v1';
 const SESSION_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const UUID_PATTERN = /^[a-fA-F0-9]{8}(?:-[a-fA-F0-9]{4}){3}-[a-fA-F0-9]{12}$/;
 const INVENTORY = new Set(['sites', 'assets', 'services', 'asset-categories', 'concessions', 'locality-types']);
 
 function sessionToken(req: Request): string | undefined {
@@ -15,14 +16,15 @@ function sessionToken(req: Request): string | undefined {
   return token && SESSION_PATTERN.test(token) ? token : undefined;
 }
 
-async function callCore(path: string, token?: string, payload?: object) {
+async function callCore(path: string, token?: string, payload?: object, expectedTenant?: string, patch = false) {
   const headers = new Headers({ Accept: 'application/json' });
   if (token) headers.set('Authorization', 'Bearer ' + token);
   if (payload) headers.set('Content-Type', 'application/json');
+  if (expectedTenant) headers.set('X-AIOps-Expected-Tenant', expectedTenant);
   try {
     const upstream = await fetch(API + path, {
       headers,
-      method: payload ? 'POST' : 'GET',
+      method: patch ? 'PATCH' : payload ? 'POST' : 'GET',
       body: payload ? JSON.stringify(payload) : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(8000),
@@ -60,7 +62,7 @@ function forward(res: Response, result: Awaited<ReturnType<typeof callCore>>) {
   else res.status(result.status).json(result.body);
 }
 
-export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean): Router {
+export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, siteWrites: boolean): Router {
   const router = Router();
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
@@ -70,7 +72,8 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean): Rou
       res.status(404).json({ error: 'Console PostgreSQL indisponível.' });
       return;
     }
-    if (req.method === 'POST' && (!req.is('application/json') || req.get('sec-fetch-site') === 'cross-site')) {
+    const mutation = req.method === 'POST' || req.method === 'PATCH';
+    if (mutation && (!req.is('application/json') || req.get('sec-fetch-site') === 'cross-site')) {
       res.status(403).json({ error: 'Envie a operação pelo console de homologação.' });
       return;
     }
@@ -78,7 +81,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean): Rou
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true, pilot_only: pilotOnly });
+    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites });
   });
 
   router.post('/login', async (req, res) => {
@@ -138,6 +141,23 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean): Rou
       forward(res, await callCore('/inventory/sites/map' + query, token));
     }
   });
+
+  if (siteWrites) {
+    async function writeSite(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.siteId;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de site ou tenant inválido.' });
+        return;
+      }
+      const path = id ? '/inventory/sites/' + id : '/inventory/sites';
+      forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
+    }
+    router.post('/inventory/sites', writeSite);
+    router.patch('/inventory/sites/:siteId', writeSite);
+  }
 
   router.get('/inventory/:resource', async (req, res) => {
     const token = authenticated(req, res);
