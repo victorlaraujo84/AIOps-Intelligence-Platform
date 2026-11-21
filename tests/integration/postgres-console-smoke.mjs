@@ -32,7 +32,7 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
   assert.deepEqual(await (await imported('/status')).json(), {
-    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false, user_admin: false, tenant_creation: false,
+    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false, user_admin: false, tenant_creation: false, incident_writes: false,
   });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
