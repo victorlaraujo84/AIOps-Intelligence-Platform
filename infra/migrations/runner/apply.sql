@@ -39,7 +39,8 @@ WITH known(version, filename, sha256) AS (
     (20, '020_create_tenant.sql', :'create_tenant_sha'),
     (21, '021_concession_delete.sql', :'concession_delete_sha'),
     (22, '022_site_delete.sql', :'site_delete_sha'),
-    (23, '023_asset_delete.sql', :'asset_delete_sha')
+    (23, '023_asset_delete.sql', :'asset_delete_sha'),
+    (24, '024_service_delete.sql', :'service_delete_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -68,13 +69,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 20), false) AS has_create_tenant,
   COALESCE(bool_or(m.version = 21), false) AS has_concession_delete,
   COALESCE(bool_or(m.version = 22), false) AS has_site_delete,
-  COALESCE(bool_or(m.version = 23), false) AS has_asset_delete
+  COALESCE(bool_or(m.version = 23), false) AS has_asset_delete,
+  COALESCE(bool_or(m.version = 24), false) AS has_service_delete
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_service_delete
+  \if :has_asset_delete
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 024 sem versão 023'; END $$;
+  \endif
 \endif
 
 \if :has_asset_delete
@@ -408,6 +417,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../023_asset_delete.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (23, '023_asset_delete.sql', :'asset_delete_sha');
+\endif
+
+\if :has_service_delete
+\else
+  \ir ../024_service_delete.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (24, '024_service_delete.sql', :'service_delete_sha');
 \endif
 
 COMMIT;

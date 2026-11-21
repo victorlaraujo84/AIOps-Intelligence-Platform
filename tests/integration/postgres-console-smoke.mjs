@@ -793,6 +793,69 @@ if (process.argv.includes('--asset-delete')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--service-delete')) {
+  const admin = client();
+  const other = client();
+  const viewer = client();
+  const operator = client();
+  const global = client();
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, name, password = name) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const list = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return (await response.json()).items;
+  };
+  assert.equal((await login(admin, 'admin')).status, 204);
+  assert.equal((await login(other, 'admin-b', 'admin')).status, 204);
+  assert.equal((await login(operator, 'operator')).status, 204);
+  assert.equal((await login(viewer, 'viewer')).status, 204);
+  assert.equal((await login(global, 'global')).status, 204);
+
+  const services = '/inventory/services';
+  const own = await list(viewer, services);
+  const removed = own.find(row => row.code === 'SERVICE_DELETE_CHECK');
+  const consumer = own.find(row => row.code === 'SERVICE_DELETE_CONSUMER');
+  const upstream = own.find(row => row.code === 'SERVICE_DELETE_UPSTREAM');
+  assert.ok(removed && consumer && upstream, 'Carregue as fixtures de exclusão de serviços antes deste teste.');
+  const foreign = await list(other, services);
+  assert.ok(foreign.length);
+  const target = services + '/' + removed.id;
+  const consumerDependencies = services + '/' + consumer.id + '/dependencies';
+  const before = await list(viewer, consumerDependencies);
+  assert.deepEqual(before.map(row => row.upstream_service_id).sort(), [removed.id, upstream.id].sort());
+  const outgoing = await list(viewer, target + '/dependencies');
+  assert.equal(outgoing.length, 2);
+  const assetId = outgoing.find(row => row.asset_id)?.asset_id;
+  assert.ok(assetId);
+  assert.ok(outgoing.some(row => row.upstream_service_id === upstream.id));
+  const remove = (session, headers) => session(target, { method: 'DELETE', data: {}, headers });
+  assert.equal((await remove(client(), scope(tenantA))).status, 401);
+  assert.equal((await remove(admin)).status, 422);
+  assert.equal((await remove(admin, { ...scope(tenantA), 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await remove(operator, scope(tenantA))).status, 403);
+  assert.equal((await remove(viewer, scope(tenantA))).status, 403);
+  assert.equal((await remove(other, scope(tenantB))).status, 404);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(global, scope(tenantA))).status, 409);
+
+  const results = await Promise.all([remove(admin, scope(tenantA)), remove(admin, scope(tenantA))]);
+  assert.deepEqual(results.map(response => response.status).sort(), [204, 404]);
+  assert.equal(await results.find(response => response.status === 204).text(), '');
+  assert.deepEqual(await list(viewer, services), own.filter(row => row.id !== removed.id));
+  assert.equal((await viewer(target + '/dependencies')).status, 404);
+  assert.deepEqual(await list(viewer, consumerDependencies), before.filter(row => row.upstream_service_id !== removed.id));
+  assert.ok((await list(viewer, '/inventory/assets')).some(row => row.id === assetId));
+  assert.deepEqual(await list(other, services), foreign);
+  for (const session of [admin, other, operator, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Exclusão de serviço, dependências nos dois sentidos, papéis e isolamento verificados por HTTPS.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -839,6 +902,9 @@ assert.equal((await operator('/inventory/sites/' + tenantA, {
   method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
 })).status, 404);
 assert.equal((await operator('/inventory/assets/' + tenantA, {
+  method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
+})).status, 404);
+assert.equal((await operator('/inventory/services/' + tenantA, {
   method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
 })).status, 404);
 assert.equal((await operator('/logout', { data: {} })).status, 204);

@@ -156,3 +156,22 @@ async def update_service(
         await audit_inventory_write(connection, tenant, identity, "SERVICE_UPDATED", "service", service_id)
     response.headers.update(AUTH_HEADERS)
     return dict(service)
+
+
+@router.delete("/{service_id}", status_code=204)
+async def delete_service(
+    service_id: UUID,
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
+    pool: Annotated[asyncpg.Pool, Depends(get_service_write_pool)],
+):
+    if identity["role"] not in {"tenant_admin", "super_admin"}:
+        raise HTTPException(403, "Apenas administradores podem excluir serviços.", headers=AUTH_HEADERS)
+    async with inventory_write_transaction(pool, identity, "aiops_service_writer") as (connection, tenant):
+        removed_id = await connection.fetchval(
+            "DELETE FROM public.services WHERE tenant_id = $1 AND id = $2 RETURNING id",
+            tenant, service_id,
+        )
+        if removed_id is None:
+            raise HTTPException(404, "Serviço não encontrado neste tenant.", headers=AUTH_HEADERS)
+        await audit_inventory_write(connection, tenant, identity, "SERVICE_DELETED", "service", removed_id)
+    return Response(status_code=204, headers=AUTH_HEADERS)

@@ -230,8 +230,20 @@ function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boole
 }
 
 const inventoryEditors = {
-  assets: { Editor: PostgresAssetEditor, newLabel: 'Novo ativo', created: 'Ativo cadastrado.', updated: 'Ativo atualizado.' },
-  services: { Editor: PostgresServiceEditor, newLabel: 'Novo serviço', created: 'Serviço cadastrado.', updated: 'Serviço atualizado.' },
+  assets: {
+    Editor: PostgresAssetEditor, newLabel: 'Novo ativo', created: 'Ativo cadastrado.', updated: 'Ativo atualizado.',
+    removal: {
+      resource: 'ativo', done: 'Ativo excluído.',
+      warning: (name: string) => `Excluir o ativo “${name}”? Os enlaces e as dependências de serviço deste ativo serão removidos.`,
+    },
+  },
+  services: {
+    Editor: PostgresServiceEditor, newLabel: 'Novo serviço', created: 'Serviço cadastrado.', updated: 'Serviço atualizado.',
+    removal: {
+      resource: 'serviço', done: 'Serviço excluído.',
+      warning: (name: string) => `Excluir o serviço “${name}”? As dependências dele e os vínculos de outros serviços com ele serão removidos.`,
+    },
+  },
 };
 
 function EditableInventory({ tenant, resource, columns, onDependencies, mayRemove = false }: {
@@ -241,17 +253,16 @@ function EditableInventory({ tenant, resource, columns, onDependencies, mayRemov
   onDependencies?: (row: Row) => void;
   mayRemove?: boolean;
 }) {
-  const { Editor, newLabel, created, updated } = inventoryEditors[resource];
+  const { Editor, newLabel, created, updated, removal } = inventoryEditors[resource];
   const [editor, setEditor] = useState<Row | 'new' | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
   const endpoint = '/inventory/' + resource;
   const { remove, removing, removalError } = useInventoryRemoval(endpoint, tenant);
 
-  function removeAsset(asset: Row) {
-    const warning = `Excluir o ativo “${asset.name}”? Os enlaces e as dependências de serviço deste ativo serão removidos.`;
-    void remove(asset.id, warning, () => setNotice(''), () => {
-      setNotice('Ativo excluído.');
+  function removeRecord(record: Row) {
+    void remove(record.id, removal.warning(String(record.name)), () => setNotice(''), () => {
+      setNotice(removal.done);
       setRevision(previous => previous + 1);
     });
   }
@@ -274,18 +285,19 @@ function EditableInventory({ tenant, resource, columns, onDependencies, mayRemov
       />}
       <PagedData<Row> key={revision} endpoint={endpoint} render={rows => (
         <InventoryTable columns={columns} rows={rows} onEdit={editor || removing ? undefined : setEditor}
-          onDependencies={editor ? undefined : onDependencies}
-          onRemove={mayRemove && resource === 'assets' ? removeAsset : undefined}
-          removalResource="ativo" removalDisabled={removing || Boolean(editor)} />
+          onDependencies={editor || removing ? undefined : onDependencies}
+          onRemove={mayRemove ? removeRecord : undefined}
+          removalResource={removal.resource} removalDisabled={removing || Boolean(editor)} />
       )} />
     </div>
   );
 }
 
-function ServicesInventory({ tenant, columns, mayWrite }: {
+function ServicesInventory({ tenant, columns, mayWrite, mayRemove }: {
   tenant: string;
   columns: readonly Column[];
   mayWrite: boolean;
+  mayRemove: boolean;
 }) {
   const [service, setService] = useState<Row | null>(null);
   if (service) return <PostgresServiceDependencies
@@ -295,7 +307,7 @@ function ServicesInventory({ tenant, columns, mayWrite }: {
     onBack={() => setService(null)}
   />;
   if (mayWrite) return <EditableInventory tenant={tenant} resource="services" columns={columns}
-    onDependencies={setService} />;
+    onDependencies={setService} mayRemove={mayRemove} />;
   return <PagedData<Row> endpoint="/inventory/services" render={rows => (
     <InventoryTable columns={columns} rows={rows} onDependencies={setService} />
   )} />;
@@ -487,7 +499,8 @@ export default function PostgresConsole() {
                 ) : resource.id === 'topology' ? (
                   <PostgresTopology tenant={identity.active_tenant_id} mayWrite={mayWrite && assetWrites} />
                 ) : resource.id === 'services' ? (
-                  <ServicesInventory tenant={identity.active_tenant_id} columns={resource.columns} mayWrite={mayWrite && serviceWrites} />
+                  <ServicesInventory tenant={identity.active_tenant_id} columns={resource.columns}
+                    mayWrite={mayWrite && serviceWrites} mayRemove={isAdmin} />
                 ) : (
                   <PagedData<Row> key={resource.id} endpoint={'/inventory/' + resource.id} render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 )}
