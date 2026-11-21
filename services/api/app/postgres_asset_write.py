@@ -189,3 +189,22 @@ async def update_asset(
         await audit_inventory_write(connection, tenant, identity, "ASSET_UPDATED", "asset", asset_id)
     response.headers.update(AUTH_HEADERS)
     return dict(asset)
+
+
+@router.delete("/{asset_id}", status_code=204)
+async def delete_asset(
+    asset_id: UUID,
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
+    pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
+):
+    if identity["role"] not in {"tenant_admin", "super_admin"}:
+        raise HTTPException(403, "Apenas administradores podem excluir ativos.", headers=AUTH_HEADERS)
+    async with inventory_write_transaction(pool, identity, "aiops_asset_writer") as (connection, tenant):
+        removed_id = await connection.fetchval(
+            "DELETE FROM public.assets WHERE tenant_id = $1 AND id = $2 RETURNING id",
+            tenant, asset_id,
+        )
+        if removed_id is None:
+            raise HTTPException(404, "Ativo não encontrado neste tenant.", headers=AUTH_HEADERS)
+        await audit_inventory_write(connection, tenant, identity, "ASSET_DELETED", "asset", removed_id)
+    return Response(status_code=204, headers=AUTH_HEADERS)

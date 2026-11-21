@@ -155,31 +155,41 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRem
   );
 }
 
-function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boolean }) {
-  const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit' | 'verify'; site: Row } | null>(null);
-  const [revision, setRevision] = useState(0);
-  const [notice, setNotice] = useState('');
-  const [error, setError] = useState('');
+function useInventoryRemoval(endpoint: string, tenant: string) {
+  const [removalError, setRemovalError] = useState('');
   const [removing, setRemoving] = useState(false);
 
-  async function remove(site: Row) {
-    const confirmed = window.confirm(`Excluir o site “${site.name}”? Os ativos serão mantidos e ficarão sem site.`);
-    if (!confirmed) return;
+  async function remove(id: string, warning: string, onStart: () => void, onRemoved: () => void) {
+    if (!window.confirm(warning)) return;
     setRemoving(true);
-    setNotice('');
-    setError('');
+    setRemovalError('');
+    onStart();
     try {
-      await request('/inventory/sites/' + site.id, {
+      await request(endpoint + '/' + id, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json', 'X-AIOps-Expected-Tenant': tenant },
         body: '{}',
       });
-      saved('Site excluído.');
+      onRemoved();
     } catch (error) {
-      setError(errorMessage(error));
+      setRemovalError(errorMessage(error));
     } finally {
       setRemoving(false);
     }
+  }
+
+  return { remove, removing, removalError };
+}
+
+function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boolean }) {
+  const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit' | 'verify'; site: Row } | null>(null);
+  const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
+  const { remove, removing, removalError } = useInventoryRemoval('/inventory/sites', tenant);
+
+  function removeSite(site: Row) {
+    const warning = `Excluir o site “${site.name}”? Os ativos serão mantidos e ficarão sem site.`;
+    void remove(site.id, warning, () => setNotice(''), () => saved('Site excluído.'));
   }
 
   function saved(message: string) {
@@ -191,7 +201,7 @@ function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boole
   return (
     <div className="space-y-4">
       {editor === null && <button type="button" className={button} disabled={removing} onClick={() => setEditor({ mode: 'create' })}>Novo site</button>}
-      {error && <Message>{error}</Message>}
+      {removalError && <Message>{removalError}</Message>}
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
       {editor?.mode === 'verify' && <PostgresSiteCoordinates
         key={editor.site.id}
@@ -211,7 +221,7 @@ function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boole
         <InventoryTable columns={resources[0].columns} rows={rows}
           onEdit={editor || removing ? undefined : site => setEditor({ mode: 'edit', site })}
           onVerify={editor || removing ? undefined : site => setEditor({ mode: 'verify', site })}
-          onRemove={mayRemove ? site => void remove(site) : undefined}
+          onRemove={mayRemove ? removeSite : undefined}
           removalResource="site" removalDisabled={removing || Boolean(editor)}
         />
       )} />
@@ -224,20 +234,32 @@ const inventoryEditors = {
   services: { Editor: PostgresServiceEditor, newLabel: 'Novo serviço', created: 'Serviço cadastrado.', updated: 'Serviço atualizado.' },
 };
 
-function EditableInventory({ tenant, resource, columns, onDependencies }: {
+function EditableInventory({ tenant, resource, columns, onDependencies, mayRemove = false }: {
   tenant: string;
   resource: keyof typeof inventoryEditors;
   columns: readonly Column[];
   onDependencies?: (row: Row) => void;
+  mayRemove?: boolean;
 }) {
   const { Editor, newLabel, created, updated } = inventoryEditors[resource];
   const [editor, setEditor] = useState<Row | 'new' | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
+  const endpoint = '/inventory/' + resource;
+  const { remove, removing, removalError } = useInventoryRemoval(endpoint, tenant);
+
+  function removeAsset(asset: Row) {
+    const warning = `Excluir o ativo “${asset.name}”? Os enlaces e as dependências de serviço deste ativo serão removidos.`;
+    void remove(asset.id, warning, () => setNotice(''), () => {
+      setNotice('Ativo excluído.');
+      setRevision(previous => previous + 1);
+    });
+  }
 
   return (
     <div className="space-y-4">
-      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>{newLabel}</button>}
+      {editor === null && <button type="button" className={button} disabled={removing} onClick={() => setEditor('new')}>{newLabel}</button>}
+      {removalError && <Message>{removalError}</Message>}
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
       {editor && <Editor
         key={editor === 'new' ? 'new' : editor.id}
@@ -250,9 +272,11 @@ function EditableInventory({ tenant, resource, columns, onDependencies }: {
           setRevision(previous => previous + 1);
         }}
       />}
-      <PagedData<Row> key={revision} endpoint={'/inventory/' + resource} render={rows => (
-        <InventoryTable columns={columns} rows={rows} onEdit={editor ? undefined : setEditor}
-          onDependencies={editor ? undefined : onDependencies} />
+      <PagedData<Row> key={revision} endpoint={endpoint} render={rows => (
+        <InventoryTable columns={columns} rows={rows} onEdit={editor || removing ? undefined : setEditor}
+          onDependencies={editor ? undefined : onDependencies}
+          onRemove={mayRemove && resource === 'assets' ? removeAsset : undefined}
+          removalResource="ativo" removalDisabled={removing || Boolean(editor)} />
       )} />
     </div>
   );
@@ -450,7 +474,7 @@ export default function PostgresConsole() {
                 ) : resource.id === 'sites' && mayWrite && siteWrites ? (
                   <EditableSites tenant={identity.active_tenant_id} mayRemove={isAdmin} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
-                  <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
+                  <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} mayRemove={isAdmin} />
                 ) : isWritableCatalog(resource.id) ? (
                   <PostgresCatalogCreate<Row> key={resource.id} catalog={resource.id} tenant={identity.active_tenant_id}
                     mayWrite={mayWrite && (resource.id === 'asset-categories' ? assetWrites : siteWrites)}

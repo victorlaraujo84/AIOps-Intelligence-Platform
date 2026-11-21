@@ -31,6 +31,7 @@ tenant_user_admin=$(sha256sum 019_tenant_user_admin.sql)
 create_tenant=$(sha256sum 020_create_tenant.sql)
 concession_delete=$(sha256sum 021_concession_delete.sql)
 site_delete=$(sha256sum 022_site_delete.sql)
+asset_delete=$(sha256sum 023_asset_delete.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -48,4 +49,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="create_tenant_sha=${create_tenant%% *}" \
   --set="concession_delete_sha=${concession_delete%% *}" \
   --set="site_delete_sha=${site_delete%% *}" \
+  --set="asset_delete_sha=${asset_delete%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql

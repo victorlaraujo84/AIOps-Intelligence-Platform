@@ -211,6 +211,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.post('/inventory/asset-categories', writeInventory('asset-categories'));
     router.post('/inventory/assets', writeInventory('assets'));
     router.patch('/inventory/assets/:id', writeInventory('assets'));
+    router.delete('/inventory/assets/:id', writeInventory('assets'));
   }
 
   if (serviceWrites) {
