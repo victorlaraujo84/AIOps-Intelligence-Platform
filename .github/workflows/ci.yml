@@ -81,6 +81,7 @@ jobs:
               -c "CREATE DATABASE aiops_inventory_rehearsal"
           '
           docker compose --profile core run -T --rm --no-deps -e PGDATABASE=aiops_inventory_rehearsal postgres-migrate
+          umask 077
           snapshot="$RUNNER_TEMP/inventory-fixture.db"
           docker compose exec -T web node --import tsx --input-type=module - \
             < tests/integration/inventory-rehearsal-fixture.mjs > "$snapshot"
@@ -90,8 +91,13 @@ jobs:
             ' > "$RUNNER_TEMP/inventory-counts.txt"
           awk -F '|' 'NF == 3 && $2 > 0 && $2 == $3 { matched++ } END { exit matched != 9 }' \
             "$RUNNER_TEMP/inventory-counts.txt"
+          python3 scripts/rehearse-inventory-migration.py "$snapshot" --identity-project "$COMPOSE_PROJECT_NAME" \
+            > "$RUNNER_TEMP/identity-counts.txt"
+          awk -F '|' 'NF == 3 && $2 > 0 && $2 == $3 { matched++ } END { exit matched != 10 }' \
+            "$RUNNER_TEMP/identity-counts.txt"
+          test "$(awk -F '|' '$1 == "users" { print $2 }' "$RUNNER_TEMP/identity-counts.txt")" = 2
           docker compose --profile core exec -T postgres sh -ec '
-            rows=$(psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -c "SELECT count(*) FROM tenants")
+            rows=$(psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -c "SELECT (SELECT count(*) FROM tenants) + (SELECT count(*) FROM users) + (SELECT count(*) FROM sessions)")
             test "$rows" = 0
           '
       - name: Validar HTTPS, bootstrap e sessão após reinício

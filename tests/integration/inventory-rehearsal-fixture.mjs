@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { openDatabase } from './src/server/db.ts';
+import { hashPassword } from './src/server/security.ts';
 
 const db = openDatabase(':memory:');
-const ids = Array.from({ length: 10 }, (_, i) => `00000000-0000-4000-9000-${String(i + 1).padStart(12, '0')}`);
-const [tenant, concession, locality, category, site, physicalAsset, logicalAsset, edge, service, dependency] = ids;
+const ids = Array.from({ length: 12 }, (_, i) => `00000000-0000-4000-9000-${String(i + 1).padStart(12, '0')}`);
+const [tenant, concession, locality, category, site, physicalAsset, logicalAsset, edge, service, dependency, admin, operator] = ids;
 const now = '2026-11-21T12:00:00.000Z';
 const label = 'São Paulo\\N\tfixture\nsegunda linha';
 const insert = (table, columns, values) => {
@@ -18,6 +19,12 @@ const insert = (table, columns, values) => {
 
 db.transaction(() => {
   insert('tenants', 'id name slug document created_at_utc updated_at_utc', [tenant, label, 'inventory-fixture', 'fixture-only', now, now]);
+  insert('users', 'id email full_name role password_hash is_active created_at_utc',
+    [admin, 'admin@example.invalid', 'Admin fixture', 'super_admin', hashPassword('admin-fixture-only'), 1, now]);
+  insert('users', 'id tenant_id email full_name role password_hash is_active created_at_utc last_login_utc',
+    [operator, tenant, 'operator@example.invalid', 'Operador fixture', 'tenant_operator', hashPassword('operator-fixture-only'), 0, now, now]);
+  insert('sessions', 'id user_id active_tenant_id token_hash expires_at_utc created_at_utc',
+    [admin, admin, tenant, 'a'.repeat(64), '2026-11-21T13:00:00.000Z', now]);
   insert('concessions', 'id tenant_id name code created_at_utc', [concession, tenant, label, 'concession', now]);
   insert('locality_types', 'id tenant_id code label created_at_utc', [locality, tenant, 'locality', label, now]);
   insert('asset_categories', 'id tenant_id code label domain created_at_utc', [category, tenant, 'category', label, 'iot', now]);

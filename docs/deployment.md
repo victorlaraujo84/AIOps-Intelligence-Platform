@@ -87,6 +87,17 @@ A migração 006 vincula contas de tenant ao tenant de origem e mantém administ
 
 Antes de transferir identidades, confira os vínculos e papéis da origem. A migração valida os usuários já cadastrados e reverte se encontrar uma combinação incompatível de papel e tenant. Em mudanças futuras de papel ou tenant de um usuário, revogue suas sessões na mesma transação. A troca do banco de autenticação deve exigir novo login. A transferência de usuários e hashes de senha e a ativação do novo backend ainda requerem validação e planejamento próprios.
 
+#### Ensaio protegido de identidades
+
+No mesmo projeto descartável do ensaio de inventário, com a migração 006 aplicada, execute:
+
+```bash
+python3 scripts/rehearse-inventory-migration.py /caminho/privado/snapshot.db \
+  --identity-project aiops-inventory-rehearsal
+```
+
+Use `--env-file` se o projeto usa um arquivo de variáveis diferente de `.env`. O modo protegido envia a operação diretamente ao PostgreSQL e imprime apenas as contagens. Ele confere os vínculos, papéis, estado da conta e a igualdade do hash scrypt antes de reverter a transação. As sessões permanecem fora da transferência. Mantenha o backup em armazenamento restrito e use o modo apenas no Docker de homologação dedicado.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
