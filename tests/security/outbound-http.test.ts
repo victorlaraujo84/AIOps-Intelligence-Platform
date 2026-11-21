@@ -79,3 +79,24 @@ test('interrompe respostas JSON acima do limite', async (t) => {
 
   await assert.rejects(getOutboundHttps('https://connector.example.com/status'), /limite de 1 MiB/);
 });
+
+test('envia JSON por POST com tamanho em bytes e bloqueia redirecionamento', async (t) => {
+  const { postOutboundHttpsJson } = await import('../../src/server/outbound-http.ts');
+  const post = t.mock.method(https, 'request', (
+    _url: URL, options: https.RequestOptions, onResponse: (response: IncomingMessage) => void,
+  ) => {
+    assert.equal(options.method, 'POST');
+    const request = new EventEmitter();
+    return Object.assign(request, {
+      end(body: string) {
+        assert.deepEqual(JSON.parse(body), { text: 'Olá' });
+        assert.equal((options.headers as Record<string, string>)['Content-Length'], String(Buffer.byteLength(body)));
+        const incoming = Readable.from([]);
+        queueMicrotask(() => onResponse(Object.assign(incoming, { statusCode: 302 }) as unknown as IncomingMessage));
+      },
+    });
+  });
+  await assert.rejects(postOutboundHttpsJson('https://connector.example.com/request', { text: 'Olá' }), /Redirecionamento bloqueado/);
+  await assert.rejects(postOutboundHttpsJson('https://connector.example.com/request', { text: 'A'.repeat(65_536) }), /limite de 64 KiB/);
+  assert.equal(post.mock.callCount(), 1);
+});

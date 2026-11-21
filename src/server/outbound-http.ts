@@ -1,9 +1,11 @@
 import dns from 'node:dns/promises';
+import type { IncomingMessage } from 'node:http';
 import https from 'node:https';
 import type { LookupFunction } from 'node:net';
 import { isPublicIpAddress, validateExternalUrl, type SsrfValidationResult } from './security.ts';
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_REQUEST_BYTES = 64 * 1024;
 
 export function validateOutboundHttpsUrl(rawUrl: string): SsrfValidationResult {
   const result = validateExternalUrl(rawUrl);
@@ -44,17 +46,34 @@ interface OutboundResponse {
   json(): unknown;
 }
 
-export async function getOutboundHttps(rawUrl: string, options: OutboundOptions = {}): Promise<OutboundResponse> {
+export function getOutboundHttps(rawUrl: string, options: OutboundOptions = {}): Promise<OutboundResponse> {
+  return outboundHttps(rawUrl, 'GET', options);
+}
+
+export function postOutboundHttpsJson(rawUrl: string, body: object, options: OutboundOptions = {}): Promise<OutboundResponse> {
+  return outboundHttps(rawUrl, 'POST', options, JSON.stringify(body));
+}
+
+async function outboundHttps(
+  rawUrl: string, method: 'GET' | 'POST', options: OutboundOptions, body?: string,
+): Promise<OutboundResponse> {
   const { parsedUrl, reason } = validateOutboundHttpsUrl(rawUrl);
   if (!parsedUrl) throw new Error(reason ?? 'Destino HTTPS inválido.');
 
+  const length = body === undefined ? 0 : Buffer.byteLength(body);
+  if (length > MAX_REQUEST_BYTES) throw new Error('A solicitação HTTPS excede o limite de 64 KiB.');
+  const headers = body === undefined ? options.headers : {
+    ...options.headers, 'Content-Type': 'application/json', 'Content-Length': length.toString(),
+  };
   return new Promise((resolve, reject) => {
-    const request = https.get(parsedUrl, {
+    const settings: https.RequestOptions = {
+      method,
       agent: false,
-      headers: options.headers,
+      headers,
       lookup: lookupPublic,
       signal: AbortSignal.timeout(options.timeoutMs ?? 6000),
-    }, (response) => {
+    };
+    function onResponse(response: IncomingMessage) {
       const status = response.statusCode ?? 502;
       if (status >= 300 && status < 400) {
         response.destroy();
@@ -83,7 +102,11 @@ export async function getOutboundHttps(rawUrl: string, options: OutboundOptions 
       response.on('end', () => {
         resolve({ status, ok, json: () => JSON.parse(Buffer.concat(chunks).toString('utf8')) });
       });
-    });
+    }
+    const request = method === 'GET'
+      ? https.get(parsedUrl, settings, onResponse)
+      : https.request(parsedUrl, settings, onResponse);
     request.on('error', reject);
+    if (method === 'POST') request.end(body);
   });
 }
