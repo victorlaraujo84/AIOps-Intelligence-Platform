@@ -418,6 +418,45 @@ def check_site_catalog(operator, operator_b):
     assert request("auth/logout", data={}, token=viewer)[0] == 204
 
 
+def check_site_location(operator, operator_b):
+    sites = "inventory/sites"
+    payload = {"code": "map-site", "name": "Site no mapa", "address": " Rua de teste, 123 ", "cep": "01234-567"}
+    assert request(sites, data={**payload, "cep": "01310-X99"}, token=operator)[0] == 422
+    assert request(sites, data={**payload, "coord_verified": True}, token=operator)[0] == 422
+    status, site, _ = request(sites, data=payload, token=operator)
+    assert status == 201 and site["address"] == "Rua de teste, 123" and site["cep"] == "01234567"
+    assert site["coord_precision"] == "pendente" and site["coord_verified"] is False
+    assert site["latitude"] is None and site["longitude"] is None
+    path = f"{sites}/{site['id']}"
+    verify = f"{path}/verify-coords"
+
+    coords = {"latitude": -23.5, "longitude": -46.5}
+    assert request(verify, data=coords, token=operator_b, method="PATCH")[0] == 404
+    for invalid in (
+        {}, {"latitude": 0}, {**coords, "latitude": -90.1}, {**coords, "longitude": 180.1},
+        {**coords, "longitude": float("inf")}, {**coords, "latitude": float("nan")},
+        {**coords, "latitude": True}, {**coords, "latitude": "-23.5"}, {**coords, "tenant_id": TENANT_B},
+    ):
+        assert request(verify, data=invalid, token=operator, method="PATCH")[0] == 422
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request(verify, data=coords, token=viewer, method="PATCH")[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+    status, verified, headers = request(verify, data=coords, token=operator, method="PATCH")
+    assert status == 200 and headers["Cache-Control"] == "no-store", (status, verified)
+    assert verified["latitude"] == coords["latitude"] and verified["longitude"] == coords["longitude"]
+    assert verified["coord_verified"] is True and verified["coord_precision"] == "manual_verificada"
+    status, changed, _ = request(path, data={"address": "Rua corrigida", "cep": None}, token=operator, method="PATCH")
+    assert status == 200 and changed["address"] == "Rua corrigida" and changed["cep"] is None
+    assert changed["latitude"] == coords["latitude"] and changed["longitude"] == coords["longitude"]
+    assert changed["coord_verified"] is True
+    status, page, _ = request(sites, token=operator)
+    assert status == 200 and changed in page["items"]
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -479,12 +518,13 @@ def main():
     check_topology(operator_token, operator_b_token)
     check_asset_categories(operator_token, operator_b_token)
     check_site_catalog(operator_token, operator_b_token)
+    check_site_location(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, inventário, catálogos, dependências, topologia e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, inventário, catálogos, georreferenciamento, dependências, topologia e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":

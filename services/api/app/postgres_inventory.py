@@ -15,7 +15,10 @@ COLUMNS = {
     "asset-categories": "id, tenant_id, code, label, domain, created_at_utc",
     "concessions": "id, tenant_id, code, name, region, description, created_at_utc",
     "locality-types": "id, tenant_id, code, label, description, created_at_utc",
-    "sites": "id, tenant_id, concession_id, locality_type_id, code, name, municipality, uf, latitude, longitude, coord_verified, criticality",
+    "sites": (
+        "id, tenant_id, concession_id, locality_type_id, code, name, address, cep, municipality, uf, "
+        "latitude, longitude, coord_precision, coord_verified, criticality"
+    ),
     "assets": "id, tenant_id, site_id, category_id, name, hostname, domain, georeference_mode, asset_type_code, criticality, operational_state",
     "services": "id, tenant_id, code, name, domain, criticality, owner_team, sla_target_pct, operational_state, description",
 }

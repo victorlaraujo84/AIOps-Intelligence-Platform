@@ -5,7 +5,7 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import COLUMNS, inventory_role_pool
@@ -16,6 +16,13 @@ router = APIRouter(prefix="/api/v1/inventory/sites", tags=["inventory"])
 SITE_FIELDS = COLUMNS["sites"]
 Code = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
 State = Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Za-z]{2}$")]
+
+Address = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+Cep = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, pattern=r"^[0-9]{5}-?[0-9]{3}$"),
+    AfterValidator(lambda value: value.replace("-", "")),
+]
 
 CHECK_WRITER_ROLE = """
 SELECT pg_has_role(current_user, 'aiops_site_writer', 'SET')
@@ -47,6 +54,8 @@ class CreateSite(BaseModel):
     name: Name
     concession_id: UUID | None = None
     locality_type_id: UUID | None = None
+    address: Address | None = None
+    cep: Cep | None = None
     municipality: Name | None = None
     uf: State | None = None
     criticality: Criticality = "media"
@@ -58,6 +67,8 @@ class UpdateSite(BaseModel):
     name: Name | None = None
     concession_id: UUID | None = None
     locality_type_id: UUID | None = None
+    address: Address | None = None
+    cep: Cep | None = None
     municipality: Name | None = None
     uf: State | None = None
     criticality: Criticality | None = None
@@ -100,12 +111,14 @@ async def create_site(
     async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
         site = await connection.fetchrow(
             f"""
-            INSERT INTO public.sites (tenant_id, code, name, municipality, uf, criticality, concession_id, locality_type_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO public.sites (
+                tenant_id, code, name, municipality, uf, criticality, concession_id, locality_type_id, address, cep
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING {SITE_FIELDS}
             """,
             tenant, body.code.upper(), body.name, body.municipality, body.uf, body.criticality,
-            body.concession_id, body.locality_type_id,
+            body.concession_id, body.locality_type_id, body.address, body.cep,
         )
         await audit_inventory_write(connection, tenant, identity, "SITE_CREATED", "site", site["id"])
     response.headers.update(AUTH_HEADERS)

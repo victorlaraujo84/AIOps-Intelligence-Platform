@@ -193,6 +193,12 @@ A migração 015 habilita o catálogo geográfico no perfil interno `core`. Use 
 
 O cadastro e a edição de sites aceitam `concession_id` e `locality_type_id` do mesmo tenant. Envie `null` em um campo no `PATCH` para remover o vínculo correspondente. O cadastro dos catálogos e as alterações de vínculo são auditados na mesma transação.
 
+### Endereço e verificação de coordenadas de sites
+
+A migração 016 permite informar `address` e `cep` no cadastro e na edição de sites. A API guarda o CEP com oito dígitos e aceita entrada com ou sem hífen. Os sites novos começam com coordenadas pendentes.
+
+Use `PATCH /api/v1/inventory/sites/{id}/verify-coords` após conferir o ponto. Envie latitude e longitude numéricas em graus. A API grava o ponto PostGIS em WGS 84, marca a origem como `manual_verificada` e registra as coordenadas e o autor na auditoria. Use essa rota para alterar o ponto. A verificação usa o DSN de escrita de sites.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
