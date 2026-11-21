@@ -199,6 +199,12 @@ A migração 016 permite informar `address` e `cep` no cadastro e na edição de
 
 Use `PATCH /api/v1/inventory/sites/{id}/verify-coords` após conferir o ponto. Envie latitude e longitude numéricas em graus. A API grava o ponto PostGIS em WGS 84, marca a origem como `manual_verificada` e registra as coordenadas e o autor na auditoria. Use essa rota para alterar o ponto. A verificação usa o DSN de escrita de sites.
 
+### Marcadores de sites para o mapa
+
+A migração 017 cria um índice por tenant, latitude e longitude para os sites verificados. Consulte `GET /api/v1/inventory/sites/map?west=-47&south=-24&east=-46&north=-23` com o DSN de leitura do inventário. Os limites são inclusivos e usam graus em WGS 84. Uma janela com `west` maior que `east` atravessa o antimeridiano.
+
+A API retorna marcadores com ponto verificado do tenant da sessão. Use `limit` para pedir até 500 marcadores. Quando houver `next_after`, passe esse valor como `after` na próxima consulta com os mesmos limites.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
