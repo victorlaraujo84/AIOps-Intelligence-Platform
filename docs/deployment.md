@@ -269,6 +269,8 @@ Configure `AIOPS_POSTGRES_SERVICE_WRITE_DSN` com uma conta dedicada ao papel de 
 
 As gravações são auditadas no PostgreSQL do piloto e verificam o tenant selecionado. Para devolver os serviços ao modo de consulta, remova a flag e recrie o Web.
 
+Em **Serviços**, abra **Dependências** na linha de um serviço para consultar os vínculos. Com a escrita de serviços habilitada, o piloto permite vincular ativos e serviços upstream do tenant selecionado, definir papel e peso e remover vínculos. A API bloqueia ciclos e registra as adições e remoções na auditoria.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

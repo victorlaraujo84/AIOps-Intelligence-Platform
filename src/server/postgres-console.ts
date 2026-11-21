@@ -16,7 +16,7 @@ function sessionToken(req: Request): string | undefined {
   return token && SESSION_PATTERN.test(token) ? token : undefined;
 }
 
-async function callCore(path: string, token?: string, payload?: object, expectedTenant?: string, patch = false) {
+async function callCore(path: string, token?: string, payload?: object, expectedTenant?: string, method?: 'PATCH' | 'DELETE') {
   const headers = new Headers({ Accept: 'application/json' });
   if (token) headers.set('Authorization', 'Bearer ' + token);
   if (payload) headers.set('Content-Type', 'application/json');
@@ -24,7 +24,7 @@ async function callCore(path: string, token?: string, payload?: object, expected
   try {
     const upstream = await fetch(API + path, {
       headers,
-      method: patch ? 'PATCH' : payload ? 'POST' : 'GET',
+      method: method ?? (payload ? 'POST' : 'GET'),
       body: payload ? JSON.stringify(payload) : undefined,
       redirect: 'error',
       signal: AbortSignal.timeout(8000),
@@ -74,7 +74,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
       res.status(404).json({ error: 'Console PostgreSQL indisponível.' });
       return;
     }
-    const mutation = req.method === 'POST' || req.method === 'PATCH';
+    const mutation = ['POST', 'PATCH', 'DELETE'].includes(req.method);
     if (mutation && (!req.is('application/json') || req.get('sec-fetch-site') === 'cross-site')) {
       res.status(403).json({ error: 'Envie a operação pelo console de homologação.' });
       return;
@@ -156,7 +156,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
       }
       const base = '/inventory/' + resource;
       const path = id ? base + '/' + id + suffix : base;
-      forward(res, await callCore(path, token, req.body ?? {}, expected, Boolean(id)));
+      forward(res, await callCore(path, token, req.body ?? {}, expected, id ? 'PATCH' : undefined));
     };
   }
 
@@ -173,6 +173,42 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   if (serviceWrites) {
     router.post('/inventory/services', writeInventory('services'));
     router.patch('/inventory/services/:id', writeInventory('services'));
+  }
+
+  function dependencyPath(req: Request, res: Response): string | undefined {
+    const { serviceId, dependencyId } = req.params;
+    if (!UUID_PATTERN.test(serviceId) || (dependencyId && !UUID_PATTERN.test(dependencyId))) {
+      res.status(422).json({ error: 'Identificador de serviço ou dependência inválido.' });
+      return;
+    }
+    const base = '/inventory/services/' + serviceId + '/dependencies';
+    return dependencyId ? base + '/' + dependencyId : base;
+  }
+
+  router.get('/inventory/services/:serviceId/dependencies', async (req, res) => {
+    const token = authenticated(req, res);
+    if (!token) return;
+    const path = dependencyPath(req, res);
+    if (path) forward(res, await callCore(path + queryFor(req, ['after', 'limit']), token));
+  });
+
+  if (serviceWrites) {
+    async function mutateDependency(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      if (!expected || !UUID_PATTERN.test(expected)) {
+        res.status(422).json({ error: 'Identificador de tenant inválido.' });
+        return;
+      }
+      const path = dependencyPath(req, res);
+      if (!path) return;
+      const removing = req.method === 'DELETE';
+      forward(res, await callCore(path, token, removing ? undefined : req.body ?? {}, expected,
+        removing ? 'DELETE' : undefined));
+    }
+    router.post('/inventory/services/:serviceId/dependencies', mutateDependency);
+    router.delete('/inventory/services/:serviceId/dependencies/:dependencyId', mutateDependency);
   }
 
   router.get('/inventory/:resource', async (req, res) => {

@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
+import { Message, PagedData } from './PostgresInventoryFields.tsx';
+import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
 import { PostgresServiceEditor } from './PostgresServiceEditor.tsx';
 import { PostgresAssetEditor } from './PostgresAssetEditor.tsx';
 import { PostgresSiteCoordinates, PostgresSiteEditor } from './PostgresSiteEditor.tsx';
@@ -23,10 +25,6 @@ const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Col
   { id: 'concessions', name: 'Concessões', columns: [['code', 'Código'], ['name', 'Nome'], ['region', 'Região']] },
   { id: 'locality-types', name: 'Tipos de localidade', columns: [['code', 'Código'], ['label', 'Rótulo']] },
 ];
-
-function Message({ children }: { children: ReactNode }) {
-  return <p role="alert" className="rounded-md border border-rose-800 px-3 py-2 text-sm text-rose-200">{children}</p>;
-}
 
 function SignIn({ onLogin }: { onLogin: (identity: Identity) => void }) {
   const [pending, setPending] = useState(false);
@@ -111,52 +109,14 @@ function TenantSelector({ active, busy, onSwitch }: {
   );
 }
 
-function PagedData<T extends { id: string }>({ endpoint, render }: { endpoint: string; render: (rows: T[]) => ReactNode }) {
-  const [rows, setRows] = useState<T[]>([]);
-  const [next, setNext] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-
-  async function load(after?: string, signal?: AbortSignal) {
-    setLoading(true);
-    setError('');
-    try {
-      const url = new URL(endpoint, window.location.origin);
-      if (after) url.searchParams.set('after', after);
-      const page = await request<Page<T>>(url.pathname + url.search, { signal });
-      setRows(previous => after ? [...previous, ...page.items] : page.items);
-      setNext(page.next_after);
-    } catch (error) {
-      if (!signal?.aborted) setError(errorMessage(error));
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    const controller = new AbortController();
-    void load(undefined, controller.signal);
-    return () => controller.abort();
-  }, [endpoint]);
-
-  return (
-    <div className="space-y-3">
-      {rows.length > 0 && render(rows)}
-      {loading && <p role="status" className="text-sm text-slate-400">Carregando…</p>}
-      {!loading && !error && rows.length === 0 && <p className="text-sm text-slate-400">Nenhum registro disponível.</p>}
-      {error && <Message>{error}</Message>}
-      {next && <button className={button} disabled={loading} onClick={() => void load(next)}>Mais resultados</button>}
-    </div>
-  );
-}
-
-function InventoryTable({ columns, rows, onEdit, onVerify }: {
+function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
   onVerify?: (row: Row) => void;
+  onDependencies?: (row: Row) => void;
 }) {
-  const hasActions = Boolean(onEdit || onVerify);
+  const hasActions = Boolean(onEdit || onVerify || onDependencies);
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm">
@@ -174,6 +134,8 @@ function InventoryTable({ columns, rows, onEdit, onVerify }: {
                 {onEdit && <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>}
                 {onVerify && <button type="button" className={button} aria-label={'Verificar coordenadas de ' + row.name}
                   onClick={() => onVerify(row)}>Verificar coordenadas</button>}
+                {onDependencies && <button type="button" className={button} aria-label={'Dependências de ' + row.name}
+                  onClick={() => onDependencies(row)}>Dependências</button>}
               </div>
             </td>}
           </tr>)}
@@ -227,10 +189,11 @@ const inventoryEditors = {
   services: { Editor: PostgresServiceEditor, newLabel: 'Novo serviço', created: 'Serviço cadastrado.', updated: 'Serviço atualizado.' },
 };
 
-function EditableInventory({ tenant, resource, columns }: {
+function EditableInventory({ tenant, resource, columns, onDependencies }: {
   tenant: string;
   resource: keyof typeof inventoryEditors;
   columns: readonly Column[];
+  onDependencies?: (row: Row) => void;
 }) {
   const { Editor, newLabel, created, updated } = inventoryEditors[resource];
   const [editor, setEditor] = useState<Row | 'new' | null>(null);
@@ -253,10 +216,30 @@ function EditableInventory({ tenant, resource, columns }: {
         }}
       />}
       <PagedData<Row> key={revision} endpoint={'/inventory/' + resource} render={rows => (
-        <InventoryTable columns={columns} rows={rows} onEdit={editor ? undefined : setEditor} />
+        <InventoryTable columns={columns} rows={rows} onEdit={editor ? undefined : setEditor}
+          onDependencies={editor ? undefined : onDependencies} />
       )} />
     </div>
   );
+}
+
+function ServicesInventory({ tenant, columns, mayWrite }: {
+  tenant: string;
+  columns: readonly Column[];
+  mayWrite: boolean;
+}) {
+  const [service, setService] = useState<Row | null>(null);
+  if (service) return <PostgresServiceDependencies
+    service={{ id: service.id, name: String(service.name) }}
+    tenant={tenant}
+    mayWrite={mayWrite}
+    onBack={() => setService(null)}
+  />;
+  if (mayWrite) return <EditableInventory tenant={tenant} resource="services" columns={columns}
+    onDependencies={setService} />;
+  return <PagedData<Row> endpoint="/inventory/services" render={rows => (
+    <InventoryTable columns={columns} rows={rows} onDependencies={setService} />
+  )} />;
 }
 
 function SiteMap({ rows }: { rows: Marker[] }) {
@@ -406,8 +389,8 @@ export default function PostgresConsole() {
                   <EditableSites tenant={identity.active_tenant_id} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
                   <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
-                ) : resource.id === 'services' && mayWrite && serviceWrites ? (
-                  <EditableInventory key="services" tenant={identity.active_tenant_id} resource="services" columns={resource.columns} />
+                ) : resource.id === 'services' ? (
+                  <ServicesInventory tenant={identity.active_tenant_id} columns={resource.columns} mayWrite={mayWrite && serviceWrites} />
                 ) : (
                   <PagedData<Row> key={resource.id} endpoint={'/inventory/' + resource.id} render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 )}
