@@ -53,8 +53,9 @@ if (imported) {
   assert.deepEqual(metrics.items.map(row => row.value_num), [1]);
   if (readOnly) {
     const flags = await request(root + '/status', 200);
-    assert.deepEqual([flags.site_writes, flags.asset_writes, flags.service_writes, flags.user_admin, flags.tenant_creation, flags.incident_writes],
-      [false, false, false, false, false, false]);
+    assert.deepEqual([flags.site_writes, flags.asset_writes, flags.service_writes, flags.user_admin, flags.tenant_creation, flags.incident_writes, flags.connector_writes],
+      [false, false, false, false, false, false, false]);
+    await request(root + '/inventory/connectors', 404, { name: 'Bloqueado' });
     await request(root + '/inventory/sites', 404, { code: 'BLOCKED', name: 'Bloqueado' });
     await request(reviewPath, 404, { expected_review: detail.incident.human_reviewed_at_utc, status: 'OPEN' }, 'PATCH');
     assert.ok(detail.incident.resolved_at_utc);

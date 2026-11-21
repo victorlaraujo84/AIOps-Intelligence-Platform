@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request, Response
 from .postgres_asset_categories import router as postgres_asset_categories_router
 from .postgres_asset_write import postgres_asset_write_lifespan, router as postgres_asset_write_router
 from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_router
+from .postgres_connector_ingest import router as postgres_ingest_router
 from .postgres_incidents import router as postgres_incidents_router
 from .postgres_inventory import postgres_inventory_lifespan, router as postgres_inventory_router
 from .postgres_itsm import router as postgres_itsm_router
@@ -44,6 +45,7 @@ app.include_router(postgres_auth_router)
 app.include_router(postgres_tenant_users_router)
 app.include_router(postgres_inventory_router)
 app.include_router(postgres_incidents_router)
+app.include_router(postgres_ingest_router)
 app.include_router(postgres_itsm_router)
 app.include_router(postgres_site_write_router)
 app.include_router(postgres_site_catalog_router)

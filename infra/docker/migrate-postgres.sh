@@ -38,6 +38,7 @@ asset_identification=$(sha256sum 026_asset_identification.sql)
 incident_review=$(sha256sum 027_incident_review.sql)
 incident_outbox=$(sha256sum 028_incident_outbox.sql)
 itsm_creation=$(sha256sum 029_itsm_ticket_creation.sql)
+event_ingest=$(sha256sum 030_authenticated_event_ingest.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -62,4 +63,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="incident_review_sha=${incident_review%% *}" \
   --set="incident_outbox_sha=${incident_outbox%% *}" \
   --set="itsm_creation_sha=${itsm_creation%% *}" \
+  --set="event_ingest_sha=${event_ingest%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql

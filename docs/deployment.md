@@ -395,3 +395,11 @@ Para cada destino:
 Cada integração recebe uma solicitação por incidente. O worker envia a referência do incidente e confirma o vínculo após obter um identificador externo válido. O 429 usa espera progressiva e respeita `Retry-After` de até 24 horas. Caso a solicitação possa ter chegado ao fornecedor sem confirmação, o estado passa a **Conferência manual necessária**. Consulte a ferramenta de destino antes de retomar o atendimento.
 
 Acompanhe o fluxo no sandbox antes de habilitar um destino operacional. Para suspender envios, desabilite o destino, aguarde o processamento em andamento e pare o worker. Operações e vínculos ficam no banco.
+
+### Ingestão de eventos autenticados
+
+Com gravações habilitadas no Compose unificado, administradores podem cadastrar um conector de importação na aba **Conectores**. Operadores e administradores podem selecionar **Importar eventos** e enviar um arquivo JSON com até 100 eventos e 512 KiB. Use uma lista JSON ou um objeto com a propriedade `events`. Cada evento inclui `idempotency_key`, `source`, `event_type`, `status`, `event_time_utc` e `observed_at_utc`. Informe os horários com fuso. Ativo e site são opcionais e devem pertencer ao tenant ativo.
+
+Para integração autenticada, use `POST /api/postgres-console/inventory/connectors/{id}/ingest` com a sessão PostgreSQL e o cabeçalho `X-AIOps-Expected-Tenant`. Envie `{"events":[…]}`. A resposta inclui o identificador da execução e as contagens de inclusões, duplicatas e novos incidentes. Uma chave repetida no mesmo tenant conta como duplicata. Uma referência de ativo ou site inválida cancela o lote inteiro.
+
+Eventos de falha são correlacionados com o grafo de ativos e serviços. A abertura, os vínculos, a auditoria e a fila de incidentes são gravados na transação de ingestão. O histórico marca a hipótese de causa e preserva a classificação humana quando há revisão. A importação é um fluxo de entrada. Testes de conectividade externa, sincronização ativa de conectores e entrega de notificações têm aceites próprios.
