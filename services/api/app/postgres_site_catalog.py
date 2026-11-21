@@ -5,9 +5,9 @@ import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS
-from .postgres_inventory_write import Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction
 from .postgres_site_write import Code, get_site_write_pool
 
 
@@ -38,7 +38,7 @@ class CreateLocalityType(BaseModel):
 async def create_concession(
     body: CreateConcession,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
     async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
@@ -62,7 +62,7 @@ async def create_concession(
 async def create_locality_type(
     body: CreateLocalityType,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
     code = re.sub(r"[^A-Z0-9_]", "_", body.code.upper())

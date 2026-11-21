@@ -271,6 +271,10 @@ Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` com uma conta dedicada ao papel de at
 
 As alterações são feitas no PostgreSQL do piloto, com auditoria e verificação do tenant selecionado. Para devolver os ativos ao modo de consulta, remova a flag e recrie o Web.
 
+#### Cadastro de catálogos no piloto
+
+Operadores e administradores podem cadastrar itens no tenant selecionado. **Categorias** usa a configuração de escrita de ativos. **Concessões** e **Tipos de localidade** usam a configuração de escrita de sites. O PostgreSQL confere o tenant ativo, impede códigos duplicados dentro do tenant e audita os cadastros. Os novos itens ficam disponíveis ao abrir os formulários de ativos e sites. A consulta permanece disponível quando a escrita está desabilitada.
+
 #### Enlaces entre ativos no piloto
 
 Abra **Topologia** para consultar os enlaces do tenant ativo. Com a escrita de ativos habilitada, use **Novo enlace** para selecionar origem e destino, informar o tipo e, opcionalmente, o provedor, a capacidade em Mbps e a redundância. A remoção requer confirmação no navegador. O PostgreSQL bloqueia ciclos e vínculos entre tenants, audita as inclusões e remoções e mantém os ativos vinculados. Para deixar a aba em modo de consulta, desabilite a flag de escrita de ativos e recrie o Web.
