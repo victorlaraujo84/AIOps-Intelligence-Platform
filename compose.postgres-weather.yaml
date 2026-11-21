@@ -1,0 +1,35 @@
+# Enable with compose.yaml, compose.postgres-release.yaml and profiles core and weather.
+services:
+  weather-worker:
+    profiles: [weather]
+    image: ${AIOPS_WEATHER_WORKER_IMAGE:-aiops-platform-weather-worker:local}
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.weather-worker
+    environment:
+      AIOPS_WEATHER_DB_DSN: ${AIOPS_WEATHER_DB_DSN:?configure AIOPS_WEATHER_DB_DSN}
+      AIOPS_WEATHER_WRITES: ${AIOPS_POSTGRES_RELEASE_WRITES:-true}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    networks:
+      - backend
+      - weather-egress
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "test", "-s", "/tmp/aiops-weather-ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  weather-egress: {}
