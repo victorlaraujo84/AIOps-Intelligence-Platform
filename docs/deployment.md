@@ -293,6 +293,8 @@ As gravações são auditadas no PostgreSQL do piloto e verificam o tenant selec
 
 Em **Serviços**, abra **Dependências** na linha de um serviço para consultar os vínculos. Com a escrita de serviços habilitada, o piloto permite vincular ativos e serviços upstream do tenant selecionado, definir papel e peso e remover vínculos. A API bloqueia ciclos e registra as adições e remoções na auditoria.
 
+A partir da migração 024, administradores podem usar **Excluir** na aba **Serviços** com a escrita de serviços habilitada. O PostgreSQL remove as dependências do serviço e os vínculos de outros serviços com ele. Os demais serviços, ativos, métricas, logs e anomalias permanecem. As referências históricas ao serviço excluído são limpas e a operação é registrada na auditoria na mesma transação.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

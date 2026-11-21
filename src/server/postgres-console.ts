@@ -217,6 +217,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   if (serviceWrites) {
     router.post('/inventory/services', writeInventory('services'));
     router.patch('/inventory/services/:id', writeInventory('services'));
+    router.delete('/inventory/services/:id', writeInventory('services'));
   }
 
   const topologyEdges = '/inventory/topology/edges';
