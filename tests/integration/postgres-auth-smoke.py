@@ -1,6 +1,8 @@
 """Smoke HTTP do autenticador PostgreSQL no contêiner FastAPI de teste."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
+from threading import Barrier
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -154,6 +156,81 @@ def check_service_write(operator, operator_b):
     assert request("auth/logout", data={}, token=viewer)[0] == 204
 
 
+def check_service_dependencies(operator, operator_b):
+    services = "inventory/services"
+    status, page, _ = request(services, token=operator)
+    assert status == 200
+    by_code = {service["code"]: service["id"] for service in page["items"]}
+    source, upstream = by_code["service-a"], by_code["RUNTIME_SERVICE"]
+    status, third, _ = request(services, data={"code": "depends", "name": "Serviço terceiro"}, token=operator)
+    assert status == 201
+    third = third["id"]
+    status, page_b, _ = request(services, token=operator_b)
+    assert status == 200
+    foreign = next(service["id"] for service in page_b["items"] if service["code"] == "service-b")
+
+    def path(service_id):
+        return f"{services}/{service_id}/dependencies"
+
+    def link(service_id, target_id):
+        return request(path(service_id), data={"upstream_service_id": target_id}, token=operator)[0]
+
+    assert request(path(source), token=operator_b)[0] == 404
+    assert request(path(source), data={"upstream_service_id": foreign}, token=operator_b)[0] == 404
+    assert link(source, foreign) == 422
+    assert link(source, source) == 409
+    assert request(path(source), data={}, token=operator)[0] == 422
+
+    status, assets, _ = request("inventory/assets", token=operator)
+    assert status == 200
+    asset = next(row for row in assets["items"] if row["name"] == "Ativo A")
+    status, assets_b, _ = request("inventory/assets", token=operator_b)
+    assert status == 200
+    asset_b = next(row for row in assets_b["items"] if row["name"] == "Ativo B")
+    assert request(path(source), data={"asset_id": asset_b["id"]}, token=operator)[0] == 422
+    data = {"asset_id": asset["id"], "dependency_role": "supporting", "weight": 2.5}
+    assert request(path(source), data={**data, "weight": float("inf")}, token=operator)[0] == 422
+    status, asset_link, _ = request(path(source), data=data, token=operator)
+    assert status == 201 and asset_link["asset_id"] == asset["id"], (status, asset_link)
+    status, service_link, _ = request(path(source), data={"upstream_service_id": upstream}, token=operator)
+    assert status == 201
+    assert link(upstream, third) == 201
+    assert link(third, source) == 409
+
+    status, first, headers = request(f"{path(source)}?limit=1", token=operator)
+    assert status == 200 and len(first["items"]) == 1 and first["next_after"]
+    assert headers["Cache-Control"] == "no-store"
+    status, second, _ = request(f"{path(source)}?limit=1&after={first['next_after']}", token=operator)
+    assert status == 200 and len(second["items"]) == 1 and second["next_after"] is None
+    by_id = {item["id"]: item for item in first["items"] + second["items"]}
+    assert by_id[asset_link["id"]]["asset_name"] == "Ativo A"
+    assert by_id[service_link["id"]]["upstream_service_name"] == "Serviço Runtime"
+
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    asset_link_url = f"{path(source)}/{asset_link['id']}"
+    assert request(path(source), token=viewer)[0] == 200
+    assert request(path(source), data={"asset_id": asset["id"]}, token=viewer)[0] == 403
+    assert request(asset_link_url, token=viewer, method="DELETE")[0] == 403
+    assert request(asset_link_url, token=operator_b, method="DELETE")[0] == 404
+    assert request(f"{path(upstream)}/{asset_link['id']}", token=operator, method="DELETE")[0] == 404
+    assert request(asset_link_url, token=operator, method="DELETE")[0] == 204
+    assert request(asset_link_url, token=operator, method="DELETE")[0] == 404
+    assert request(f"{path(source)}/{service_link['id']}", token=operator, method="DELETE")[0] == 204
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+
+    barrier = Barrier(2)
+
+    def concurrent_link(edge):
+        barrier.wait(timeout=5)
+        return link(*edge)
+
+    with ThreadPoolExecutor(2) as workers:
+        statuses = sorted(workers.map(concurrent_link, [(source, third), (third, source)]))
+    assert statuses == [201, 409], statuses
+
+
 def main():
     invalid = login("operator-auth@example.invalid", "senha-errada-fixture")
     for email in ("absent@example.invalid", "disabled-auth@example.invalid", "suspended-auth@example.invalid"):
@@ -211,12 +288,13 @@ def main():
     check_site_write(operator_token, operator_b_token)
     check_asset_write(operator_token, operator_b_token)
     check_service_write(operator_token, operator_b_token)
+    check_service_dependencies(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura isolada, gravação de sites, ativos e serviços, e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, gravação de inventário e dependências, e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":

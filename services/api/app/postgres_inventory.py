@@ -79,6 +79,25 @@ def get_inventory_pool(request: Request) -> asyncpg.Pool:
     return pool
 
 
+@asynccontextmanager
+async def inventory_read_transaction(pool: asyncpg.Pool, identity: asyncpg.Record):
+    tenant = identity["active_tenant_id"]
+    if tenant is None:
+        raise HTTPException(409, "Selecione um tenant ativo.", headers=AUTH_HEADERS)
+
+    try:
+        async with pool.acquire(timeout=5) as connection:
+            async with connection.transaction(readonly=True, isolation="repeatable_read"):
+                await connection.execute("SET LOCAL ROLE aiops_tenant_reader")
+                await connection.fetchval("SELECT pg_catalog.set_config('app.current_tenant_id', $1, true)", str(tenant))
+                active = await connection.fetchval("SELECT status = 'active' FROM public.tenants WHERE id = $1", tenant)
+                if not active:
+                    raise HTTPException(409, "Tenant ativo indisponível.", headers=AUTH_HEADERS)
+                yield connection, tenant
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
+        raise HTTPException(503, "Inventário temporariamente indisponível.", headers=AUTH_HEADERS) from None
+
+
 @router.get("/{resource}")
 async def list_inventory(
     resource: Resource,
@@ -88,27 +107,14 @@ async def list_inventory(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     after: UUID | None = None,
 ):
-    tenant = identity["active_tenant_id"]
-    if tenant is None:
-        raise HTTPException(409, "Selecione um tenant ativo.", headers=AUTH_HEADERS)
-
     # Somente nomes e colunas estáticos entram no SQL. O contexto vem da sessão.
     query = f"""
         SELECT {COLUMNS[resource]} FROM public.{resource}
         WHERE tenant_id = $1 AND ($2::uuid IS NULL OR id > $2)
         ORDER BY id LIMIT $3
     """
-    try:
-        async with pool.acquire(timeout=5) as connection:
-            async with connection.transaction(readonly=True, isolation="repeatable_read"):
-                await connection.execute("SET LOCAL ROLE aiops_tenant_reader")
-                await connection.fetchval("SELECT pg_catalog.set_config('app.current_tenant_id', $1, true)", str(tenant))
-                active = await connection.fetchval("SELECT status = 'active' FROM public.tenants WHERE id = $1", tenant)
-                if not active:
-                    raise HTTPException(409, "Tenant ativo indisponível.", headers=AUTH_HEADERS)
-                rows = await connection.fetch(query, tenant, after, limit + 1)
-    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
-        raise HTTPException(503, "Inventário temporariamente indisponível.", headers=AUTH_HEADERS) from None
+    async with inventory_read_transaction(pool, identity) as (connection, tenant):
+        rows = await connection.fetch(query, tenant, after, limit + 1)
 
     response.headers.update(AUTH_HEADERS)
     return {
