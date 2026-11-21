@@ -1,3 +1,4 @@
+import { getOpenMeteoCurrent } from './open-meteo-current.ts';
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { SlidingWindowRateLimiter } from './security.ts';
 
@@ -214,7 +215,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   if (incidentWrites) router.patch('/inventory/incidents/:id/rca-review', incident);
 
   if (connectorWrites) {
-    async function connectorIngest(req: Request, res: Response) {
+    const connectorIngest = (suffix = '') => async (req: Request, res: Response) => {
       const token = authenticated(req, res);
       if (!token) return;
       const expected = req.get('X-AIOps-Expected-Tenant');
@@ -223,11 +224,52 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
         res.status(422).json({ error: 'Identificador de conector ou tenant inválido.' });
         return;
       }
-      const action = id ? '/' + id + '/ingest' : '';
+      const action = id ? '/' + id + '/ingest' + suffix : '';
       forward(res, await callCore('/inventory/connectors' + action, token, req.body ?? {}, expected));
-    }
-    router.post('/inventory/connectors', connectorIngest);
-    router.post('/inventory/connectors/:id/ingest', connectorIngest);
+    };
+    router.post('/inventory/connectors', connectorIngest());
+    router.post('/inventory/connectors/:id/ingest', connectorIngest());
+    router.post('/inventory/connectors/:id/ingest/metrics', connectorIngest('/metrics'));
+    router.post('/inventory/connectors/:id/ingest/logs', connectorIngest('/logs'));
+
+    router.post('/inventory/connectors/open-meteo', async (req, res) => {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      if (!expected || !UUID_PATTERN.test(expected)) {
+        res.status(422).json({ error: 'Identificador de tenant inválido.' });
+        return;
+      }
+      forward(res, await callCore('/inventory/connectors/open-meteo', token, req.body ?? {}, expected));
+    });
+
+    const weather = (operation: 'sync' | 'disable' | 'schedule') => async (req: Request, res: Response) => {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.id;
+      if (!expected || !UUID_PATTERN.test(expected) || !UUID_PATTERN.test(id)) {
+        res.status(422).json({ error: 'Identificador de conector ou tenant inválido.' });
+        return;
+      }
+      const path = '/inventory/connectors/' + id + '/open-meteo/';
+      if (operation !== 'sync') {
+        const body = req.method === 'POST' ? (operation === 'schedule' ? req.body ?? {} : {}) : undefined;
+        forward(res, await callCore(path + operation, token, body, expected));
+        return;
+      }
+      const target = await callCore(path + 'begin', token, {}, expected);
+      if (target.status !== 200) {
+        forward(res, target);
+        return;
+      }
+      const result = await getOpenMeteoCurrent(target.body.latitude, target.body.longitude);
+      forward(res, await callCore(path + 'finish', token, { run_id: target.body.run_id, ...result }, expected));
+    };
+    router.post('/inventory/connectors/:id/open-meteo/sync', weather('sync'));
+    router.post('/inventory/connectors/:id/open-meteo/disable', weather('disable'));
+    router.get('/inventory/connectors/:id/open-meteo/schedule', weather('schedule'));
+    router.post('/inventory/connectors/:id/open-meteo/schedule', weather('schedule'));
   }
 
   if (itsm) {

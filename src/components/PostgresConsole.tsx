@@ -5,7 +5,7 @@ import { ConsoleError, errorMessage, post, request } from '../lib/postgres-conso
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
 import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.tsx';
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
-import { PostgresConnectorCreate, PostgresConnectorImport } from './PostgresConnectorForms.tsx';
+import { PostgresConnectorCreate, PostgresConnectorImport, PostgresOpenMeteoCreate, PostgresOpenMeteoActions } from './PostgresConnectorForms.tsx';
 import { PostgresIncidentDetail } from './PostgresIncidentDetail.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { isWritableCatalog, PostgresCatalogCreate } from './PostgresCatalogCreate.tsx';
@@ -348,22 +348,32 @@ function ConnectorInventory({ tenant, mayCreate, mayIngest, columns }: {
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
 
-  if (connector) return <PostgresConnectorImport key={connector.id} tenant={tenant} connector={connector.id}
-    name={String(connector.name)} onClose={() => setConnector(null)} onImported={result => {
-      setConnector(null);
-      setRevision(previous => previous + 1);
-      setNotice(`${result.ingested} ingeridos, ${result.deduplicated} duplicados e ${result.created_incidents} novos incidentes.`);
-    }} />;
+  function updated(message: string) {
+    setConnector(null);
+    setRevision(previous => previous + 1);
+    setNotice(message);
+  }
+
+  if (connector) return (
+    <div className="space-y-3">
+      {connector.connector_type === 'open_meteo' && connector.status !== 'DISABLED' &&
+        <PostgresOpenMeteoActions key={"clima-" + connector.id} tenant={tenant} connector={connector.id}
+          mayDisable={mayCreate} onChanged={updated} />}
+      <PostgresConnectorImport key={connector.id} tenant={tenant} connector={connector.id}
+        name={String(connector.name)} onClose={() => setConnector(null)} onImported={result => {
+          const counts = `${result.ingested} ingeridos e ${result.deduplicated} duplicados`;
+          updated(result.created_incidents === undefined ? counts + '.' : `${counts}. Novos incidentes: ${result.created_incidents}.`);
+        }} />
+    </div>
+  );
 
   return (
     <div className="space-y-3">
-      {mayCreate && <PostgresConnectorCreate tenant={tenant} onCreated={() => {
-        setRevision(previous => previous + 1);
-        setNotice('Conector cadastrado.');
-      }} />}
+      {mayCreate && <PostgresConnectorCreate tenant={tenant} onCreated={() => updated('Conector cadastrado.')} />}
+      {mayCreate && <PostgresOpenMeteoCreate tenant={tenant} onCreated={() => updated('Open-Meteo configurado.')} />}
       {notice && <p role="status" className="text-sm text-slate-300">{notice}</p>}
       <PagedData<Row> key={revision} endpoint="/inventory/connectors" render={rows => (
-        <InventoryTable columns={columns} rows={rows} onView={mayIngest ? setConnector : undefined} viewLabel="Importar eventos" />
+        <InventoryTable columns={columns} rows={rows} onView={mayIngest ? setConnector : undefined} viewLabel="Abrir conector" />
       )} />
     </div>
   );

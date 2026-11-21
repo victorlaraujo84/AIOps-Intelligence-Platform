@@ -17,6 +17,8 @@ jobs:
   acceptance:
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/ci.yml
+    with:
+      skip_itsm: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[telemetry-033]') }}
   publish:
     needs: acceptance
     concurrency:
@@ -50,7 +52,7 @@ jobs:
         shell: bash
         run: |
           for ref in "$IMAGE_NAMESPACE-web:$RELEASE_VERSION" "$IMAGE_NAMESPACE-api:$RELEASE_VERSION" \
-            "$IMAGE_NAMESPACE-web:itsm-worker-$RELEASE_VERSION"; do
+            "$IMAGE_NAMESPACE-web:itsm-worker-$RELEASE_VERSION" "$IMAGE_NAMESPACE-web:weather-worker-$RELEASE_VERSION"; do
             if docker manifest inspect "$ref" >/dev/null 2>&1; then
               printf 'A tag já existe: %s\n' "$ref" >&2
               exit 1
@@ -67,8 +69,12 @@ jobs:
           docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$SOURCE_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             -f infra/docker/Dockerfile.itsm-worker -t "$IMAGE_NAMESPACE-web:itsm-worker-$RELEASE_VERSION" .
+          docker build --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$SOURCE_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -f infra/docker/Dockerfile.weather-worker -t "$IMAGE_NAMESPACE-web:weather-worker-$RELEASE_VERSION" .
       - name: Publicar no GHCR
         run: |
           docker push "$IMAGE_NAMESPACE-web:itsm-worker-$RELEASE_VERSION"
+          docker push "$IMAGE_NAMESPACE-web:weather-worker-$RELEASE_VERSION"
           docker push "$IMAGE_NAMESPACE-api:$RELEASE_VERSION"
           docker push "$IMAGE_NAMESPACE-web:$RELEASE_VERSION"

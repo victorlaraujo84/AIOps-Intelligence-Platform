@@ -398,8 +398,39 @@ Acompanhe o fluxo no sandbox antes de habilitar um destino operacional. Para sus
 
 ### Ingestão de eventos autenticados
 
-Com gravações habilitadas no Compose unificado, administradores podem cadastrar um conector de importação na aba **Conectores**. Operadores e administradores podem selecionar **Importar eventos** e enviar um arquivo JSON com até 100 eventos e 512 KiB. Use uma lista JSON ou um objeto com a propriedade `events`. Cada evento inclui `idempotency_key`, `source`, `event_type`, `status`, `event_time_utc` e `observed_at_utc`. Informe os horários com fuso. Ativo e site são opcionais e devem pertencer ao tenant ativo.
+Com gravações habilitadas no Compose unificado, administradores podem cadastrar um conector de importação na aba **Conectores**. Operadores e administradores podem abrir um conector, escolher **eventos** no formulário **Importar telemetria** e enviar um arquivo JSON com até 100 eventos e 512 KiB. Use uma lista JSON ou um objeto com a propriedade `events`. Cada evento inclui `idempotency_key`, `source`, `event_type`, `status`, `event_time_utc` e `observed_at_utc`. Informe os horários com fuso. Ativo e site são opcionais e devem pertencer ao tenant ativo.
 
 Para integração autenticada, use `POST /api/postgres-console/inventory/connectors/{id}/ingest` com a sessão PostgreSQL e o cabeçalho `X-AIOps-Expected-Tenant`. Envie `{"events":[…]}`. A resposta inclui o identificador da execução e as contagens de inclusões, duplicatas e novos incidentes. Uma chave repetida no mesmo tenant conta como duplicata. Uma referência de ativo ou site inválida cancela o lote inteiro.
 
 Eventos de falha são correlacionados com o grafo de ativos e serviços. A abertura, os vínculos, a auditoria e a fila de incidentes são gravados na transação de ingestão. O histórico marca a hipótese de causa e preserva a classificação humana quando há revisão. A importação é um fluxo de entrada. Testes de conectividade externa, sincronização ativa de conectores e entrega de notificações têm aceites próprios.
+
+### Importação de métricas e logs
+
+Em **Conectores**, abra um conector e, no formulário **Importar telemetria**, selecione **métricas** ou **logs**. O arquivo pode conter uma lista JSON ou um objeto com a chave `metrics` ou `logs`. Pela API, use `POST /api/postgres-console/inventory/connectors/{id}/ingest/metrics` ou `/ingest/logs`, com o objeto correspondente, a sessão PostgreSQL e o cabeçalho `X-AIOps-Expected-Tenant`.
+
+Envie de 1 a 100 registros por lote, com até 512 KiB. Cada registro precisa de `idempotency_key`, `source` e `observed_at_utc` com fuso. Métricas exigem `metric_name`, `value_num` numérico finito e `unit`. Logs exigem `severity` (`DEBUG`, `INFO`, `WARN`, `ERROR` ou `FATAL`) e `message`. Os vínculos opcionais `asset_id`, `service_id` e `site_id` devem pertencer ao tenant. Com um ativo cadastrado em um site, esse site é herdado.
+
+Após uma falha de comunicação, repita o lote com as mesmas chaves. O PostgreSQL contabiliza duplicatas por tenant e tipo de sinal, inclusive métricas repetidas com outro horário. Um registro inválido reverte o lote. O resultado inclui `run_id`, `ingested` e `deduplicated`. Consulte os registros nas abas **Métricas** e **Logs**.
+
+### Coleta climática com Open-Meteo
+
+Em **Conectores → Configurar Open-Meteo**, um administrador seleciona um site com coordenadas verificadas e autoriza o envio desse ponto. O mesmo site usa um único conector configurado por esse formulário. Se o ponto verificado mudar, salve a configuração novamente para autorizar as novas coordenadas.
+
+Abra o conector e use **Sincronizar clima**. O operador consulta condições modeladas atuais e registra temperatura, precipitação, rajadas e pressão atmosférica como métricas atribuídas ao Open-Meteo. A resposta inclui o identificador da execução e as contagens de inclusão e deduplicação. A ausência de valores esperados ou a falha do fornecedor aparece como erro de sincronização. Entre tentativas do mesmo conector há um intervalo de 30 segundos. O botão executa uma coleta imediata.
+
+O endpoint público é destinado ao uso não comercial. As condições e a atribuição estão na [documentação oficial](https://open-meteo.com/en/docs). Para interromper novos envios, um administrador pode usar **Desativar coleta climática**. A operação mantém as amostras e o histórico. O modo de leitura do Compose também bloqueia a sincronização.
+
+### Agendamento da coleta climática
+
+Inclua `compose.postgres-weather.yaml` com os arquivos do Compose unificado e habilite os perfis `core` e `weather`. Para usar a imagem empacotada no release, configure `AIOPS_WEATHER_WORKER_IMAGE` com o pacote Web e a tag `weather-worker-<versão>`. O comando de build local recebe o arquivo de variáveis do ambiente.
+
+```sh
+docker compose --env-file /caminho/aiops.env -f compose.yaml -f compose.postgres-release.yaml \
+  -f compose.postgres-weather.yaml --profile core --profile weather up -d --build --wait
+```
+
+Crie uma conta PostgreSQL de serviço com `LOGIN` e sem privilégios administrativos. Conceda o papel `aiops_weather_worker` com herança e configure a senha interativamente no `psql` com `\password`. Guarde o DSN em `AIOPS_WEATHER_DB_DSN` no arquivo privado do Compose. O worker usa a rede interna para acessar o PostgreSQL e a rede de saída para consultar a origem HTTPS fixa.
+
+Em **Conectores**, abra um Open-Meteo autorizado e escolha 15, 30, 60 ou 180 minutos em **Frequência da coleta automática**. O primeiro horário fica elegível imediatamente. Uma execução bem-sucedida agenda a próxima no intervalo escolhido. Falhas de fornecedor agendam uma nova tentativa após cinco minutos. Uma reserva interrompida é encerrada ao expirar e uma nova tentativa fica elegível um minuto após a reserva original, enquanto o worker estiver operando.
+
+O agendamento começa desativado para cada conector. Escolha **Desativada** para pausar apenas a coleta automática. A desativação do conector ou a mudança das coordenadas autorizadas cancela o agendamento anterior. Com `AIOPS_POSTGRES_RELEASE_WRITES=false`, recrie também o worker para interromper novas reservas. Os horários exibidos representam elegibilidade de coleta. O resultado fica registrado na execução do conector e na auditoria.
