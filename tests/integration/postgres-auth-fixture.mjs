@@ -13,6 +13,8 @@ CREATE ROLE aiops_auth_ci LOGIN PASSWORD 'auth-ci-fixture-only';
 GRANT aiops_authenticator TO aiops_auth_ci;
 CREATE ROLE aiops_inventory_ci LOGIN NOINHERIT PASSWORD 'inventory-ci-fixture-only';
 GRANT aiops_tenant_reader TO aiops_inventory_ci WITH SET TRUE;
+CREATE ROLE aiops_site_write_ci LOGIN NOINHERIT PASSWORD 'site-write-ci-fixture-only';
+GRANT aiops_site_writer TO aiops_site_write_ci WITH SET TRUE;
 INSERT INTO tenants (id, name, slug, status) VALUES
   ('${active}', 'Auth CI', 'auth-ci', 'active'),
   ('${suspended}', 'Auth CI suspenso', 'auth-ci-suspended', 'suspended'),
@@ -28,6 +30,7 @@ INSERT INTO services (tenant_id, code, name) VALUES
 INSERT INTO users (tenant_id, email, full_name, role, password_hash, is_active) VALUES
   ('${active}', 'operator-auth@example.invalid', 'Operador CI', 'tenant_operator', '${hash('operator-ci-fixture-only')}', true),
   ('${active}', 'disabled-auth@example.invalid', 'Desativado CI', 'tenant_viewer', '${hash('operator-ci-fixture-only')}', false),
+  ('${active}', 'viewer-auth@example.invalid', 'Leitor CI', 'tenant_viewer', '${hash('viewer-ci-fixture-only')}', true),
   ('${suspended}', 'suspended-auth@example.invalid', 'Suspenso CI', 'tenant_viewer', '${hash('operator-ci-fixture-only')}', true),
   ('${second}', 'operator-b-auth@example.invalid', 'Operador B', 'tenant_operator', '${hash('operator-ci-fixture-only')}', true),
   (NULL, 'global-auth@example.invalid', 'Global CI', 'super_admin', '${hash('global-ci-fixture-only')}', true);

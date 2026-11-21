@@ -61,7 +61,7 @@ jobs:
               -c "SELECT tenant_id FROM metric_samples LIMIT 0"
             history=$(psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc \
               "SELECT string_agg(version::text, Chr(44) ORDER BY version) FROM aiops_admin.schema_migrations")
-            test "$history" = 1,2,3,4,5,6,7,8
+            test "$history" = 1,2,3,4,5,6,7,8,9
           '
           docker compose --profile core exec -T postgres sh -ec '
             exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
@@ -115,7 +115,7 @@ jobs:
           docker compose --profile core up -d --wait --wait-timeout 120
           curl --fail --silent --show-error --retry 5 --cacert "$ca" --cookie "$cookies" \
             https://localhost/api/auth/me | jq -e '.user.role == "super_admin" and .user.active_tenant_id != null'
-      - name: Validar autenticação e inventário PostgreSQL no FastAPI
+      - name: Validar autenticação, inventário e auditoria PostgreSQL no FastAPI
         shell: bash
         run: |
           docker compose exec -T web node --input-type=module - \
@@ -125,9 +125,24 @@ jobs:
             '
           export AIOPS_POSTGRES_AUTH_DSN=postgresql://aiops_auth_ci:auth-ci-fixture-only@postgres:5432/aiops_platform
           export AIOPS_POSTGRES_INVENTORY_DSN=postgresql://aiops_inventory_ci:inventory-ci-fixture-only@postgres:5432/aiops_platform
+          export AIOPS_POSTGRES_SITE_WRITE_DSN=postgresql://aiops_site_write_ci:site-write-ci-fixture-only@postgres:5432/aiops_platform
           export AIOPS_POSTGRES_AUTH_SESSION_SECRET=ci-fixture-pg-auth-session-not-for-production
           docker compose --profile core up -d --no-deps --force-recreate --wait --wait-timeout 60 api
           docker compose --profile core exec -T api python - < tests/integration/postgres-auth-smoke.py
+          audit_counts=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT a.action, count(*)
+          FROM audit_logs a
+          JOIN sites s ON s.id::text = a.resource_id AND s.tenant_id = a.tenant_id
+          JOIN users u ON u.id = a.actor_user_id AND u.tenant_id = a.tenant_id
+          WHERE s.code = 'RUNTIME-SITE' AND a.actor_role = 'tenant_operator'
+            AND a.resource_type = 'site'
+          GROUP BY a.action
+          ORDER BY a.action;
+          SQL
+          )
+          test "$audit_counts" = $'SITE_CREATED|2\nSITE_UPDATED|1'
       - name: Estado do ambiente em caso de falha
         if: failure()
         run: |

@@ -36,6 +36,23 @@ FROM pg_roles r WHERE r.rolname = current_user
 
 
 @asynccontextmanager
+async def inventory_role_pool(dsn: str, role_query: str, role_error: str):
+    pool = None
+    try:
+        try:
+            pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4, timeout=5, command_timeout=5)
+            allowed = await pool.fetchval(role_query, timeout=5)
+        except Exception:
+            raise RuntimeError("Falha ao iniciar o inventário PostgreSQL. Confira o DSN e as migrações.") from None
+        if not allowed:
+            raise RuntimeError(role_error)
+        yield pool
+    finally:
+        if pool is not None:
+            await pool.close()
+
+
+@asynccontextmanager
 async def postgres_inventory_lifespan(app: FastAPI):
     dsn = os.environ.get("AIOPS_POSTGRES_INVENTORY_DSN", "")
     app.state.inventory_pool = None
@@ -45,21 +62,14 @@ async def postgres_inventory_lifespan(app: FastAPI):
     if app.state.postgres_auth is None:
         raise RuntimeError("O inventário exige a autenticação PostgreSQL configurada.")
 
-    pool = None
-    try:
-        try:
-            pool = await asyncpg.create_pool(dsn=dsn, min_size=1, max_size=4, timeout=5, command_timeout=5)
-            allowed = await pool.fetchval(CHECK_READER_ROLE, timeout=5)
-        except Exception:
-            raise RuntimeError("Falha ao iniciar o inventário PostgreSQL. Confira o DSN e as migrações.") from None
-        if not allowed:
-            raise RuntimeError("Configure uma conta que possa assumir apenas aiops_tenant_reader sem herdar acesso.")
+    async with inventory_role_pool(
+        dsn, CHECK_READER_ROLE, "Configure uma conta que possa assumir apenas aiops_tenant_reader sem herdar acesso.",
+    ) as pool:
         app.state.inventory_pool = pool
-        yield
-    finally:
-        app.state.inventory_pool = None
-        if pool is not None:
-            await pool.close()
+        try:
+            yield
+        finally:
+            app.state.inventory_pool = None
 
 
 def get_inventory_pool(request: Request) -> asyncpg.Pool:

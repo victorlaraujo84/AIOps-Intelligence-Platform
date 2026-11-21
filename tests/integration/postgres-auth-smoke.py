@@ -11,7 +11,7 @@ SUSPENDED = "00000000-0000-4000-b000-000000000002"
 TENANT_B = "00000000-0000-4000-b000-000000000003"
 
 
-def request(path, *, data=None, token=None):
+def request(path, *, data=None, token=None, method=None):
     headers = {}
     payload = None
     if data is not None:
@@ -20,7 +20,7 @@ def request(path, *, data=None, token=None):
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        with urlopen(Request(f"{BASE}/{path}", data=payload, headers=headers), timeout=10) as response:
+        with urlopen(Request(f"{BASE}/{path}", data=payload, headers=headers, method=method), timeout=10) as response:
             body = response.read()
             return response.status, json.loads(body) if body else None, response.headers
     except HTTPError as error:
@@ -30,6 +30,33 @@ def request(path, *, data=None, token=None):
 
 def login(email, password):
     return request("auth/login", data={"email": email, "password": password})
+
+
+def check_site_write(operator, operator_b):
+    payload = {"code": "runtime-site", "name": "Site Runtime A", "municipality": "São Paulo", "uf": "sp"}
+    assert request("inventory/sites", data={**payload, "tenant_id": TENANT_B}, token=operator)[0] == 422
+    status, site, headers = request("inventory/sites", data=payload, token=operator)
+    assert status == 201 and site["tenant_id"] == TENANT_A and site["code"] == "RUNTIME-SITE" and site["uf"] == "SP"
+    assert headers["Cache-Control"] == "no-store"
+    assert request("inventory/sites", data=payload, token=operator)[0] == 409
+    site_url = f"inventory/sites/{site['id']}"
+    assert request(site_url, data={"name": "Outro tenant"}, token=operator_b, method="PATCH")[0] == 404
+    assert request(site_url, data={"name": None}, token=operator, method="PATCH")[0] == 422
+    status, updated, _ = request(
+        site_url, data={"name": "Site Runtime atualizado", "municipality": None}, token=operator, method="PATCH",
+    )
+    assert status == 200 and updated["name"] == "Site Runtime atualizado" and updated["municipality"] is None
+    status, site_b, _ = request("inventory/sites", data={**payload, "name": "Site Runtime B"}, token=operator_b)
+    assert status == 201 and site_b["tenant_id"] == TENANT_B
+    status, data, _ = login("viewer-auth@example.invalid", "viewer-ci-fixture-only")
+    assert status == 200
+    viewer = data["access_token"]
+    assert request("inventory/sites", data=payload, token=viewer)[0] == 403
+    assert request(site_url, data={"name": "Leitor"}, token=viewer, method="PATCH")[0] == 403
+    assert request("auth/logout", data={}, token=viewer)[0] == 204
+    status, final_page, _ = request("inventory/sites", token=operator)
+    assert status == 200 and any(item["id"] == site["id"] and item["name"] == updated["name"] for item in final_page["items"])
+    assert all(item["tenant_id"] == TENANT_A for item in final_page["items"])
 
 
 def main():
@@ -62,6 +89,7 @@ def main():
 
     assert request("inventory/sites")[0] == 401
     assert request("inventory/sites", token=global_token)[0] == 409
+    assert request("inventory/sites", data={"code": "global", "name": "Global"}, token=global_token)[0] == 409
     assert request("auth/switch-tenant", data={"tenant_id": SUSPENDED}, token=global_token)[0] == 404
     assert request("auth/switch-tenant", data={"tenant_id": TENANT_B}, token=operator_token)[0] == 403
     status, page, headers = request(f"inventory/sites?limit=1&tenant_id={TENANT_B}", token=operator_token)
@@ -85,12 +113,13 @@ def main():
         status, global_page, _ = request("inventory/sites", token=global_token)
         assert status == 200 and [row["code"] for row in global_page["items"]] == expected_codes
 
+    check_site_write(operator_token, operator_b_token)
     assert request("auth/logout", data={}, token=operator_b_token)[0] == 204
     assert request("auth/logout", data={}, token=operator_token)[0] == 204
     assert request("auth/me", token=operator_token)[0] == 401
     assert request("auth/me", token=global_token)[0] == 200
     assert request("auth/logout", data={}, token=global_token)[0] == 204
-    print("Login, troca de tenant, leitura paginada isolada e logout validados com PostgreSQL.")
+    print("Login, troca de tenant, leitura isolada, gravação de sites e logout validados com PostgreSQL.")
 
 
 if __name__ == "__main__":
