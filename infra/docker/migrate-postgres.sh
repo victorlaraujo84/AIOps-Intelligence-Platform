@@ -15,8 +15,9 @@ reader=$(sha256sum 003_tenant_reader.sql)
 links=$(sha256sum 004_tenant_links.sql)
 inventory=$(sha256sum 005_inventory_parity.sql)
 identity=$(sha256sum 006_identity_sessions.sql)
+auth=$(sha256sum 007_authenticator.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
   --set="inventory_sha=${inventory%% *}" --set="identity_sha=${identity%% *}" \
-  --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql
+  --set="auth_sha=${auth%% *}" --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql

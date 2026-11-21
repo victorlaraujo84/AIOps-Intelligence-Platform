@@ -1,12 +1,16 @@
 from fastapi import FastAPI
 
+from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_router
 from .schemas import HonestState
 
 app = FastAPI(
     title="AIOps Intelligence Platform — Core API",
     version="1.0.0",
+    lifespan=postgres_auth_lifespan,
     description="Backend modular FastAPI multi-tenant com RLS, ingestão espaço-temporal, RCA e ML local.",
 )
+
+app.include_router(postgres_auth_router)
 
 
 @app.get("/health")
