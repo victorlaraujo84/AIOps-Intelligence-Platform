@@ -232,6 +232,23 @@ docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core u
 
 Acesse `/postgres-inventory` pelo HTTPS do proxy. Entre com uma conta PostgreSQL da homologação. Administradores globais selecionam o tenant antes de abrir o inventário. O piloto oferece consulta de sites, ativos, serviços, categorias, concessões, tipos de localidade e mapa de sites verificados. O Compose adicional conecta o Web à rede interna do FastAPI. Para retirar o piloto, recrie o Web com o Compose principal.
 
+#### Carga inicial em paralelo com a homologação
+
+Use um projeto Compose separado, com `POSTGRES_DB=aiops_inventory_pilot`, sub-rede e IP de proxy distintos. Inclua `compose.postgres-pilot.yaml` para publicar HTTPS em loopback, na porta `9443` por padrão, e abrir diretamente o inventário de consulta. Configure um hostname distinto, como `AIOPS_HOST=pilot.localhost`, para separar os cookies do console principal. Configure os DSNs de autenticação e leitura para esse banco com papéis exclusivos.
+
+```bash
+docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postgres-pilot.yaml \
+  -p aiops-postgres-pilot --profile core up -d --wait postgres
+docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postgres-pilot.yaml \
+  -p aiops-postgres-pilot --profile core run --rm --no-deps postgres-migrate
+python3 scripts/rehearse-inventory-migration.py "$backup_dir/aiops.db" \
+  --pilot-project aiops-postgres-pilot
+docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postgres-pilot.yaml \
+  -p aiops-postgres-pilot --profile core up -d --build --wait
+```
+
+A carga grava o inventário e os hashes de autenticação em uma transação, somente no banco dedicado e vazio. Inicie uma nova sessão no piloto com as credenciais da cópia. O piloto representa o momento do backup. Para voltar ao console original, acesse o endereço habitual e pare o projeto piloto com `docker compose stop` usando os mesmos arquivos e nome de projeto.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

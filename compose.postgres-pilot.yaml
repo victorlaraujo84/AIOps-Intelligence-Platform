@@ -1,0 +1,7 @@
+services:
+  web:
+    environment:
+      AIOPS_POSTGRES_PILOT_ONLY: "true"
+  proxy:
+    ports: !override
+      - "127.0.0.1:${AIOPS_PILOT_HTTPS_PORT:-9443}:443"

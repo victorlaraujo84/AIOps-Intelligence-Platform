@@ -116,7 +116,16 @@ export function createApp(options: { dbPath?: string; db?: Database.Database } =
     }
   });
 
-  app.use('/api/postgres-console', postgresConsoleRouter(process.env.AIOPS_POSTGRES_CONSOLE === 'true'));
+  const postgresConsole = process.env.AIOPS_POSTGRES_CONSOLE === 'true';
+  const pilotOnly = process.env.AIOPS_POSTGRES_PILOT_ONLY === 'true';
+  if (pilotOnly && !postgresConsole) throw new Error('O piloto exige o Compose do console PostgreSQL.');
+  app.use('/api/postgres-console', postgresConsoleRouter(postgresConsole, pilotOnly));
+
+  if (pilotOnly) {
+    app.get('/', (_req, res) => res.redirect(302, '/postgres-inventory'));
+    app.use('/api', (_req, res) => res.status(404).json({ error: 'Rota indisponível neste piloto.' }));
+    return { app, db };
+  }
 
   // Middleware de autenticação
   function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction) {

@@ -60,7 +60,7 @@ function forward(res: Response, result: Awaited<ReturnType<typeof callCore>>) {
   else res.status(result.status).json(result.body);
 }
 
-export function postgresConsoleRouter(enabled: boolean): Router {
+export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean): Router {
   const router = Router();
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
@@ -78,7 +78,7 @@ export function postgresConsoleRouter(enabled: boolean): Router {
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true });
+    res.json({ enabled: true, pilot_only: pilotOnly });
   });
 
   router.post('/login', async (req, res) => {
