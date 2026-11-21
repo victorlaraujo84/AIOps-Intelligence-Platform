@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
+import { PostgresServiceEditor } from './PostgresServiceEditor.tsx';
 import { PostgresAssetEditor } from './PostgresAssetEditor.tsx';
 import { PostgresSiteCoordinates, PostgresSiteEditor } from './PostgresSiteEditor.tsx';
 
@@ -17,7 +18,7 @@ const input = 'w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 
 const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Column[] }> = [
   { id: 'sites', name: 'Sites', columns: [['code', 'Código'], ['name', 'Nome'], ['municipality', 'Município'], ['uf', 'UF'], ['coord_precision', 'Coordenadas']] },
   { id: 'assets', name: 'Ativos', columns: [['name', 'Nome'], ['hostname', 'Hostname'], ['domain', 'Domínio'], ['operational_state', 'Estado']] },
-  { id: 'services', name: 'Serviços', columns: [['code', 'Código'], ['name', 'Nome'], ['owner_team', 'Equipe'], ['operational_state', 'Estado']] },
+  { id: 'services', name: 'Serviços', columns: [['code', 'Código'], ['name', 'Nome'], ['owner_team', 'Equipe'], ['sla_target_pct', 'Meta de SLA (%)'], ['operational_state', 'Estado']] },
   { id: 'asset-categories', name: 'Categorias', columns: [['code', 'Código'], ['label', 'Rótulo'], ['domain', 'Domínio']] },
   { id: 'concessions', name: 'Concessões', columns: [['code', 'Código'], ['name', 'Nome'], ['region', 'Região']] },
   { id: 'locality-types', name: 'Tipos de localidade', columns: [['code', 'Código'], ['label', 'Rótulo']] },
@@ -221,27 +222,37 @@ function EditableSites({ tenant }: { tenant: string }) {
   );
 }
 
-function EditableAssets({ tenant, columns }: { tenant: string; columns: readonly Column[] }) {
+const inventoryEditors = {
+  assets: { Editor: PostgresAssetEditor, newLabel: 'Novo ativo', created: 'Ativo cadastrado.', updated: 'Ativo atualizado.' },
+  services: { Editor: PostgresServiceEditor, newLabel: 'Novo serviço', created: 'Serviço cadastrado.', updated: 'Serviço atualizado.' },
+};
+
+function EditableInventory({ tenant, resource, columns }: {
+  tenant: string;
+  resource: keyof typeof inventoryEditors;
+  columns: readonly Column[];
+}) {
+  const { Editor, newLabel, created, updated } = inventoryEditors[resource];
   const [editor, setEditor] = useState<Row | 'new' | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
 
   return (
     <div className="space-y-4">
-      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>Novo ativo</button>}
+      {editor === null && <button type="button" className={button} onClick={() => setEditor('new')}>{newLabel}</button>}
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
-      {editor && <PostgresAssetEditor
+      {editor && <Editor
         key={editor === 'new' ? 'new' : editor.id}
         tenant={tenant}
-        asset={editor === 'new' ? undefined : editor}
+        record={editor === 'new' ? undefined : editor}
         onCancel={() => setEditor(null)}
         onSaved={() => {
-          setNotice(editor === 'new' ? 'Ativo cadastrado.' : 'Ativo atualizado.');
+          setNotice(editor === 'new' ? created : updated);
           setEditor(null);
           setRevision(previous => previous + 1);
         }}
       />}
-      <PagedData<Row> key={revision} endpoint="/inventory/assets" render={rows => (
+      <PagedData<Row> key={revision} endpoint={'/inventory/' + resource} render={rows => (
         <InventoryTable columns={columns} rows={rows} onEdit={editor ? undefined : setEditor} />
       )} />
     </div>
@@ -299,17 +310,19 @@ export default function PostgresConsole() {
   const [showMainLink, setShowMainLink] = useState(false);
   const [siteWrites, setSiteWrites] = useState(false);
   const [assetWrites, setAssetWrites] = useState(false);
+  const [serviceWrites, setServiceWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
+        setServiceWrites(status.service_writes);
       })
       .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
@@ -392,7 +405,9 @@ export default function PostgresConsole() {
                 ) : resource.id === 'sites' && mayWrite && siteWrites ? (
                   <EditableSites tenant={identity.active_tenant_id} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
-                  <EditableAssets tenant={identity.active_tenant_id} columns={resource.columns} />
+                  <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
+                ) : resource.id === 'services' && mayWrite && serviceWrites ? (
+                  <EditableInventory key="services" tenant={identity.active_tenant_id} resource="services" columns={resource.columns} />
                 ) : (
                   <PagedData<Row> key={resource.id} endpoint={'/inventory/' + resource.id} render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 )}

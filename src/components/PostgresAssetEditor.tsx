@@ -4,9 +4,9 @@ import { button, CatalogField, field, loadCatalog, type Choice } from './Postgre
 
 type Asset = { id: string } & Record<string, string | number | null>;
 
-export function PostgresAssetEditor({ tenant, asset, onCancel, onSaved }: {
+export function PostgresAssetEditor({ tenant, record: asset, onCancel, onSaved }: {
   tenant: string;
-  asset?: Asset;
+  record?: Asset;
   onCancel: () => void;
   onSaved: () => void;
 }) {

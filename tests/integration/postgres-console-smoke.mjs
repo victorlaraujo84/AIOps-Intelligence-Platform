@@ -32,7 +32,7 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
   assert.deepEqual(await (await imported('/status')).json(), {
-    enabled: true, pilot_only: true, site_writes: false, asset_writes: false,
+    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false,
   });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
@@ -206,6 +206,64 @@ if (process.argv.includes('--asset-writes')) {
     assert.equal((await session('/logout', { data: {} })).status, 204);
   }
   console.log('Cadastro e edição de ativos verificados por HTTPS com vínculos, georreferenciamento e isolamento por tenant.');
+  process.exit(0);
+}
+
+if (process.argv.includes('--service-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const global = client();
+  const path = '/inventory/services';
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, email, password) => session('/login', { data: { email, password } });
+  assert.equal((await (await a('/status')).json()).service_writes, true);
+  assert.equal((await a(path, { data: {}, headers: scope(tenantA) })).status, 401);
+  assert.equal((await login(a, 'operator-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(b, 'operator-b-auth@example.invalid', 'operator-ci-fixture-only')).status, 204);
+  assert.equal((await login(viewer, 'viewer-auth@example.invalid', 'viewer-ci-fixture-only')).status, 204);
+  const fields = { code: 'pilot service', name: 'Serviço do piloto', sla_target_pct: 99.95, owner_team: 'NOC' };
+  assert.equal((await viewer(path, { data: fields, headers: scope(tenantA) })).status, 403);
+  assert.equal((await a(path, { data: fields })).status, 422);
+  for (const invalid of [-1, 100.1, '99.95', true]) {
+    assert.equal((await a(path, { data: { ...fields, sla_target_pct: invalid }, headers: scope(tenantA) })).status, 422);
+  }
+  const created = await a(path, { data: fields, headers: scope(tenantA) });
+  assert.equal(created.status, 201);
+  const service = await created.json();
+  assert.equal(service.code, 'PILOT_SERVICE');
+  assert.equal(service.sla_target_pct, 99.95);
+  assert.equal(service.operational_state, 'NO_DATA');
+  assert.equal(service.tenant_id, tenantA);
+  assert.equal((await a(path, { data: fields, headers: scope(tenantA) })).status, 409);
+  const other = await b(path, { data: { ...fields, sla_target_pct: 0 }, headers: scope(tenantB) });
+  assert.equal(other.status, 201);
+  assert.equal((await other.json()).sla_target_pct, 0);
+
+  const patch = (session, tenant, data) => session(path + '/' + service.id, {
+    method: 'PATCH', headers: scope(tenant), data,
+  });
+  assert.equal((await patch(b, tenantB, { name: 'Outro tenant' })).status, 404);
+  assert.equal((await patch(viewer, tenantA, { name: 'Leitor' })).status, 403);
+  assert.equal((await patch(a, tenantA, { code: 'NOVO' })).status, 422);
+  const changed = await patch(a, tenantA, { name: 'Serviço do piloto atualizado', sla_target_pct: null });
+  assert.equal(changed.status, 200);
+  const edited = await changed.json();
+  assert.equal(edited.sla_target_pct, null);
+  assert.equal(edited.owner_team, 'NOC');
+
+  assert.equal((await login(global, 'global-auth@example.invalid', 'global-ci-fixture-only')).status, 204);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantA } })).status, 200);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await global(path, { data: { ...fields, code: 'stale' }, headers: scope(tenantA) })).status, 409);
+  const listA = (await (await a(path)).json()).items;
+  const listB = (await (await b(path)).json()).items;
+  assert.deepEqual(listA.find(row => row.id === service.id), edited);
+  assert.ok(!listB.some(row => row.id === service.id || row.code === 'STALE'));
+  for (const session of [a, b, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Cadastro e edição de serviços verificados por HTTPS com SLA e isolamento por tenant.');
   process.exit(0);
 }
 

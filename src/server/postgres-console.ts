@@ -65,6 +65,7 @@ function forward(res: Response, result: Awaited<ReturnType<typeof callCore>>) {
 export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, siteWrites: boolean): Router {
   const router = Router();
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
+  const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
   router.use((req, res, next) => {
@@ -82,7 +83,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites });
+    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites });
   });
 
   router.post('/login', async (req, res) => {
@@ -143,7 +144,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     }
   });
 
-  function writeInventory(resource: 'sites' | 'assets', suffix: '' | '/verify-coords' = '') {
+  function writeInventory(resource: 'sites' | 'assets' | 'services', suffix: '' | '/verify-coords' = '') {
     return async (req: Request, res: Response) => {
       const token = authenticated(req, res);
       if (!token) return;
@@ -167,6 +168,11 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   if (assetWrites) {
     router.post('/inventory/assets', writeInventory('assets'));
     router.patch('/inventory/assets/:id', writeInventory('assets'));
+  }
+
+  if (serviceWrites) {
+    router.post('/inventory/services', writeInventory('services'));
+    router.patch('/inventory/services/:id', writeInventory('services'));
   }
 
   router.get('/inventory/:resource', async (req, res) => {
