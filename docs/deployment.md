@@ -263,6 +263,12 @@ Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` com uma conta dedicada ao papel de at
 
 As alterações são feitas no PostgreSQL do piloto, com auditoria e verificação do tenant selecionado. Para devolver os ativos ao modo de consulta, remova a flag e recrie o Web.
 
+#### Cadastro e edição de serviços no piloto
+
+Configure `AIOPS_POSTGRES_SERVICE_WRITE_DSN` com uma conta dedicada ao papel de serviços e defina `AIOPS_POSTGRES_PILOT_WRITE_SERVICES=true`. Recrie o Web e a API do piloto. Em **Serviços**, use **Novo serviço** ou **Editar**. Informe o código no cadastro e preencha a meta de SLA em percentual de 0 a 100. Deixe a meta em branco para omitir ou remover o valor. A equipe responsável e a descrição são opcionais.
+
+As gravações são auditadas no PostgreSQL do piloto e verificam o tenant selecionado. Para devolver os serviços ao modo de consulta, remova a flag e recrie o Web.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

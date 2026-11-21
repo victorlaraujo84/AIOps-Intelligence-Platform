@@ -10,9 +10,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS, inventory_role_pool
-from .postgres_inventory_write import Criticality, Domain, Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Criticality, Domain, Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction
 
 
 class ServiceWriteRoute(APIRoute):
@@ -110,7 +110,7 @@ def get_service_write_pool(request: Request) -> asyncpg.Pool:
 async def create_service(
     body: CreateService,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_service_write_pool)],
 ):
     code = re.sub(r"[^A-Z0-9_-]", "_", body.code.upper())
@@ -133,7 +133,7 @@ async def update_service(
     service_id: UUID,
     body: UpdateService,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_service_write_pool)],
 ):
     changes = body.model_dump(exclude_unset=True)
