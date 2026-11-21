@@ -81,6 +81,12 @@ python3 scripts/rehearse-inventory-migration.py /caminho/privado/snapshot.db |
 
 O ensaio compara as contagens de tenants, concessões, tipos de localidade, categorias, sites, ativos, serviços, dependências e topologia. A importação exige UUIDs válidos, referências dentro do tenant e PostgreSQL migrado até a versão 005. O PostGIS recebe geometria apenas para coordenadas verificadas. O script termina com `ROLLBACK`, inclusive quando as contagens coincidem. Usuários, sessões, credenciais, incidentes e telemetria têm contratos de migração próprios.
 
+### Identidades e sessões no PostgreSQL
+
+A migração 006 vincula contas de tenant ao tenant de origem e mantém administradores globais separados. Sessões de usuários de tenant herdam esse vínculo. Administradores globais podem selecionar um tenant ativo, e a exclusão desse tenant limpa a seleção. O banco armazena somente o hash do token de sessão. O papel de leitura de inventário permanece separado da autenticação.
+
+Antes de transferir identidades, confira os vínculos e papéis da origem. A migração valida os usuários já cadastrados e reverte se encontrar uma combinação incompatível de papel e tenant. Em mudanças futuras de papel ou tenant de um usuário, revogue suas sessões na mesma transação. A troca do banco de autenticação deve exigir novo login. A transferência de usuários e hashes de senha e a ativação do novo backend ainda requerem validação e planejamento próprios.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
