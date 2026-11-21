@@ -49,7 +49,11 @@ export function Message({ children }: { children: ReactNode }) {
 
 type Page<T> = { items: T[]; next_after: string | null };
 
-export function PagedData<T extends { id: string }>({ endpoint, render }: { endpoint: string; render: (rows: T[]) => ReactNode }) {
+export function PagedData<T extends { id: string }>({ endpoint, expectedTenant, render }: {
+  endpoint: string;
+  expectedTenant?: string;
+  render: (rows: T[]) => ReactNode;
+}) {
   const [rows, setRows] = useState<T[]>([]);
   const [next, setNext] = useState<string | null>(null);
   const [error, setError] = useState('');
@@ -61,7 +65,8 @@ export function PagedData<T extends { id: string }>({ endpoint, render }: { endp
     try {
       const url = new URL(endpoint, window.location.origin);
       if (after) url.searchParams.set('after', after);
-      const page = await request<Page<T>>(url.pathname + url.search, { signal });
+      const headers = expectedTenant ? { 'X-AIOps-Expected-Tenant': expectedTenant } : undefined;
+      const page = await request<Page<T>>(url.pathname + url.search, { signal, headers });
       setRows(previous => after ? [...previous, ...page.items] : page.items);
       setNext(page.next_after);
     } catch (error) {
@@ -75,7 +80,7 @@ export function PagedData<T extends { id: string }>({ endpoint, render }: { endp
     const controller = new AbortController();
     void load(undefined, controller.signal);
     return () => controller.abort();
-  }, [endpoint]);
+  }, [endpoint, expectedTenant]);
 
   return (
     <div className="space-y-3">

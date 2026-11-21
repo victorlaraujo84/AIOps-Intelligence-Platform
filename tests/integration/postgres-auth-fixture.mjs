@@ -33,6 +33,8 @@ INSERT INTO services (tenant_id, code, name) VALUES
   ('${active}', 'service-a', 'Serviço A'), ('${second}', 'service-b', 'Serviço B');
 INSERT INTO users (tenant_id, email, full_name, role, password_hash, is_active) VALUES
   ('${active}', 'operator-auth@example.invalid', 'Operador CI', 'tenant_operator', '${hash('operator-ci-fixture-only')}', true),
+  ('${active}', 'admin-auth@example.invalid', 'Administrador A', 'tenant_admin', '${hash('admin-ci-fixture-only')}', true),
+  ('${second}', 'admin-b-auth@example.invalid', 'Administrador B', 'tenant_admin', '${hash('admin-ci-fixture-only')}', true),
   ('${active}', 'disabled-auth@example.invalid', 'Desativado CI', 'tenant_viewer', '${hash('operator-ci-fixture-only')}', false),
   ('${active}', 'viewer-auth@example.invalid', 'Leitor CI', 'tenant_viewer', '${hash('viewer-ci-fixture-only')}', true),
   ('${suspended}', 'suspended-auth@example.invalid', 'Suspenso CI', 'tenant_viewer', '${hash('operator-ci-fixture-only')}', true),

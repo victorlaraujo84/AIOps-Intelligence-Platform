@@ -195,6 +195,7 @@ jobs:
       - name: Validar gravação do inventário pelo piloto
         shell: bash
         run: |
+          AIOPS_POSTGRES_PILOT_MANAGE_USERS=true \
           AIOPS_PILOT_HTTPS_PORT=443 AIOPS_POSTGRES_PILOT_WRITE_SITES=true AIOPS_POSTGRES_PILOT_WRITE_ASSETS=true \
             AIOPS_POSTGRES_PILOT_WRITE_SERVICES=true docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postgres-pilot.yaml \
               --profile core up -d --no-deps --force-recreate --wait web proxy
@@ -263,6 +264,17 @@ jobs:
           SQL
           )
           test "$topology_counts" = $'TOPOLOGY_EDGE_CREATED|6\nTOPOLOGY_EDGE_DELETED|2'
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --tenant-users
+          users_audit=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT action, count(*) FROM audit_logs
+          WHERE resource_type = 'user'
+          GROUP BY action ORDER BY action;
+          SQL
+          )
+          test "$users_audit" = $'USER_ACTIVATED|1\nUSER_CREATED|1\nUSER_DEACTIVATED|1'
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |
