@@ -192,6 +192,31 @@ jobs:
           docker compose -f compose.yaml -f compose.postgres-console.yaml --profile core \
             up -d --no-deps --force-recreate --wait web
           NODE_EXTRA_CA_CERTS="$ca" node tests/integration/postgres-console-smoke.mjs
+      - name: Ativar o piloto com dados sintéticos migrados do SQLite
+        shell: bash
+        run: |
+          docker compose --profile core exec -T postgres sh -ec '
+            exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+              -c "CREATE DATABASE aiops_inventory_pilot"
+          '
+          docker compose --profile core run -T --rm --no-deps -e PGDATABASE=aiops_inventory_pilot postgres-migrate
+          snapshot="$RUNNER_TEMP/inventory-fixture.db"
+          python3 scripts/rehearse-inventory-migration.py "$snapshot" --pilot-project "$COMPOSE_PROJECT_NAME"
+          if python3 scripts/rehearse-inventory-migration.py "$snapshot" --pilot-project "$COMPOSE_PROJECT_NAME"; then
+            exit 1
+          fi
+          counts=$(docker compose --profile core exec -T postgres sh -ec '
+            psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_pilot \
+              -c "SELECT (SELECT count(*) FROM tenants), (SELECT count(*) FROM users), (SELECT count(*) FROM sessions)"
+          ')
+          test "$counts" = '1|2|0'
+          export AIOPS_POSTGRES_AUTH_DSN=postgresql://aiops_auth_ci:auth-ci-fixture-only@postgres:5432/aiops_inventory_pilot
+          export AIOPS_POSTGRES_AUTH_SESSION_SECRET=ci-fixture-pg-auth-session-not-for-production
+          export AIOPS_POSTGRES_INVENTORY_DSN=postgresql://aiops_inventory_ci:inventory-ci-fixture-only@postgres:5432/aiops_inventory_pilot
+          AIOPS_PILOT_HTTPS_PORT=443 docker compose -f compose.yaml -f compose.postgres-console.yaml \
+            -f compose.postgres-pilot.yaml --profile core up -d --no-deps --force-recreate --wait api web proxy
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --imported-pilot
       - name: Estado do ambiente em caso de falha
         if: failure()
         run: |

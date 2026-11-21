@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gera um ensaio psql revertível a partir de um backup SQLite consistente."""
+"""Ensaios de migração e carga inicial do piloto a partir de um backup SQLite consistente."""
 
 import argparse
 from contextlib import closing
@@ -41,6 +41,8 @@ INVENTORY = {
 IDENTITIES = {
     "users": "id tenant_id email full_name role password_hash is_active created_at_utc last_login_utc",
 }
+REHEARSAL_DATABASE = "aiops_inventory_rehearsal"
+PILOT_DATABASE = "aiops_inventory_pilot"
 SCRYPT_HASH = re.compile(r"scrypt:[0-9a-f]{32}:[0-9a-f]{128}")
 
 BEGIN = r"""
@@ -56,8 +58,8 @@ SET LOCAL log_min_error_statement = 'panic';
 
 DO $$
 BEGIN
-  IF current_database() <> 'aiops_inventory_rehearsal' THEN
-    RAISE EXCEPTION 'Use o banco descartável aiops_inventory_rehearsal';
+  IF current_database() <> '{database}' THEN
+    RAISE EXCEPTION 'Use o banco dedicado {database}';
   END IF;
   PERFORM pg_advisory_xact_lock(189174310, 1);
   IF to_regclass('aiops_admin.schema_migrations') IS NULL THEN
@@ -86,6 +88,15 @@ BEGIN
 END $$;
 """
 
+PILOT_GUARD = """
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM aiops_admin.schema_migrations WHERE version = 18) THEN
+    RAISE EXCEPTION 'A carga do piloto exige a migração PostgreSQL 018';
+  END IF;
+END $$;
+"""
+
 VERIFY_NO_SESSIONS = """
 DO $$
 BEGIN
@@ -105,7 +116,6 @@ END $$;
 
 SELECT table_name, source_rows, target_rows
 FROM pg_temp.aiops_inventory_counts ORDER BY table_name;
-ROLLBACK;
 """
 
 
@@ -151,8 +161,11 @@ def convert(table, row, ordinal):
     return result
 
 
-def write_rehearsal(db, output, *, include_identities=False):
-    print(BEGIN, file=output)
+def write_transfer(db, output, *, include_identities=False, pilot=False):
+    database = PILOT_DATABASE if pilot else REHEARSAL_DATABASE
+    print(BEGIN.format(database=database), file=output)
+    if pilot:
+        print(PILOT_GUARD, file=output)
     tables = INVENTORY
     if include_identities:
         print(IDENTITY_GUARD, file=output)
@@ -228,15 +241,18 @@ END $$;""", file=output)
     if include_identities:
         print(VERIFY_NO_SESSIONS, file=output)
     print(END, file=output)
+    print("COMMIT;" if pilot else "ROLLBACK;", file=output)
 
 
-def run_compose_rehearsal(db, project, env_file, *, include_identities):
+def run_compose_transfer(db, project, env_file, *, include_identities, pilot):
     command = ["docker", "compose", "--project-name", project, "--profile", "core"]
     if env_file is not None:
         command.extend(["--env-file", str(env_file)])
+    database = PILOT_DATABASE if pilot else REHEARSAL_DATABASE
     command.extend([
         "exec", "-T", "postgres", "sh", "-ec",
-        'exec psql -XqAt -F "|" -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d aiops_inventory_rehearsal -f -',
+        'exec psql -XqAt -F "|" -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$1" -f -',
+        "psql", database,
     ])
 
     # O SQL sensível segue direto para o cliente, sem spool e sem eco. Descartamos
@@ -247,12 +263,12 @@ def run_compose_rehearsal(db, project, env_file, *, include_identities):
     ) as process:
         try:
             with process.stdin:
-                write_rehearsal(db, process.stdin, include_identities=include_identities)
+                write_transfer(db, process.stdin, include_identities=include_identities, pilot=pilot)
         except BrokenPipeError:
-            raise ValueError("o PostgreSQL encerrou o ensaio; confira o projeto, o schema e o banco vazio") from None
+            raise ValueError("o PostgreSQL encerrou a operação; confira o projeto, o schema e o banco vazio") from None
         rows = process.stdout.read().splitlines()
         if process.wait() != 0:
-            raise ValueError("o PostgreSQL recusou o ensaio; confira o projeto, os vínculos e as migrações")
+            raise ValueError("o PostgreSQL recusou a operação; confira o projeto, o banco vazio, os vínculos e as migrações")
 
     expected = set(INVENTORY)
     if include_identities:
@@ -273,13 +289,18 @@ def main():
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--identity-project", help="inclui usuários via psql no projeto Compose descartável")
     mode.add_argument("--inventory-project", help="envia apenas o inventário ao projeto Compose descartável")
-    parser.add_argument("--env-file", type=Path, help="arquivo de variáveis do projeto Compose do ensaio")
+    mode.add_argument(
+        "--pilot-project", help="persiste inventário e identidades no banco vazio aiops_inventory_pilot",
+    )
+    parser.add_argument("--env-file", type=Path, help="arquivo de variáveis do projeto Compose")
     args = parser.parse_args()
-    project = args.identity_project if args.identity_project is not None else args.inventory_project
+    pilot = args.pilot_project is not None
+    project = next((name for name in (args.pilot_project, args.identity_project, args.inventory_project)
+                    if name is not None), None)
     if project is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
         parser.error("nome de projeto Compose inválido")
     if args.env_file is not None and project is None:
-        parser.error("--env-file exige um projeto Compose de ensaio")
+        parser.error("--env-file exige um projeto Compose")
     snapshot = args.snapshot.resolve()
     if not snapshot.is_file() or any(Path(str(snapshot) + suffix).exists() for suffix in ("-wal", "-journal")):
         parser.error("forneça um backup SQLite completo, sem arquivos WAL ou journal")
@@ -289,11 +310,14 @@ def main():
             if db.execute("PRAGMA quick_check").fetchone()[0] != "ok":
                 raise ValueError("backup SQLite falhou na verificação de integridade")
             if project is not None:
-                run_compose_rehearsal(db, project, args.env_file, include_identities=args.identity_project is not None)
+                run_compose_transfer(
+                    db, project, args.env_file,
+                    include_identities=pilot or args.identity_project is not None, pilot=pilot,
+                )
                 return
             # Prepara toda a entrada antes de tocar o PostgreSQL. O arquivo é temporário e privado.
             with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as script:
-                write_rehearsal(db, script)
+                write_transfer(db, script)
                 script.seek(0)
                 for line in script:
                     sys.stdout.write(line)

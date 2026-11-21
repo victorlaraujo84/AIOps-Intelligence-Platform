@@ -24,6 +24,37 @@ function client() {
   };
 }
 
+if (process.argv.includes('--imported-pilot')) {
+  const imported = client();
+  const id = '00000000-0000-4000-9000-000000000001';
+  const home = await fetch(origin + '/', { redirect: 'manual' });
+  assert.equal(home.status, 302);
+  assert.equal(home.headers.get('Location'), '/postgres-inventory');
+  assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
+  assert.deepEqual(await (await imported('/status')).json(), { enabled: true, pilot_only: true });
+  assert.equal((await imported('/inventory/sites')).status, 401);
+  assert.equal((await imported('/login', {
+    data: { email: 'operator@example.invalid', password: 'operator-fixture-only' },
+  })).status, 401);
+  assert.equal((await imported('/login', {
+    data: { email: 'admin@example.invalid', password: 'admin-fixture-only' },
+  })).status, 204);
+  const account = await (await imported('/me')).json();
+  assert.equal(account.active_tenant_id, null);
+  const tenants = await (await imported('/tenants')).json();
+  assert.deepEqual(tenants.items.map(item => item.id), [id]);
+  assert.equal((await imported('/switch-tenant', { data: { tenant_id: id } })).status, 200);
+  const sites = await (await imported('/inventory/sites')).json();
+  assert.deepEqual(sites.items.map(site => [site.code, site.tenant_id]), [['site', id]]);
+  const assets = await (await imported('/inventory/assets')).json();
+  assert.equal(assets.items.length, 2);
+  const markers = await (await imported('/inventory/sites/map?west=-47&south=-24&east=-46&north=-23')).json();
+  assert.deepEqual(markers.items.map(site => [site.code, site.latitude, site.longitude]), [['site', -23.55, -46.63]]);
+  assert.equal((await imported('/logout', { data: {} })).status, 204);
+  console.log('Console autenticou a conta migrada e consultou inventário e mapa importados.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);

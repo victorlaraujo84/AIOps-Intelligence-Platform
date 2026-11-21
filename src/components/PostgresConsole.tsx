@@ -241,12 +241,16 @@ export default function PostgresConsole() {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [checking, setChecking] = useState(true);
   const [unavailable, setUnavailable] = useState('');
+  const [showMainLink, setShowMainLink] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [resource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
+    void request<{ pilot_only: boolean }>('/status', { signal: controller.signal })
+      .then(status => setShowMainLink(!status.pilot_only))
+      .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
       .then(setIdentity)
       .catch(error => {
@@ -299,7 +303,7 @@ export default function PostgresConsole() {
           <h1 className="font-semibold">Inventário PostgreSQL</h1>
           <div className="flex items-center gap-4">
             {identity && <button className={button} disabled={busy} onClick={() => void logout()}>Sair</button>}
-            <a className="text-sm text-sky-400 hover:underline" href="/">Voltar ao console</a>
+            {showMainLink && <a className="text-sm text-sky-400 hover:underline" href="/">Voltar ao console</a>}
           </div>
         </div>
       </header>
