@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
+import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.tsx';
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
@@ -300,17 +301,20 @@ export default function PostgresConsole() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [userAdmin, setUserAdmin] = useState(false);
+  const [tenantCreation, setTenantCreation] = useState(false);
+  const [tenantListRevision, setTenantListRevision] = useState(0);
   const [selectedResource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; user_admin: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
         setServiceWrites(status.service_writes);
         setUserAdmin(status.user_admin);
+        setTenantCreation(status.tenant_creation);
       })
       .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
@@ -338,6 +342,18 @@ export default function PostgresConsole() {
       } catch {
         setIdentity(null);
       }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createTenant(data: NewTenant) {
+    setBusy(true);
+    try {
+      const created = await post<Tenant & { active_tenant_id: string }>('/tenants', data);
+      setIdentity(current => current && { ...current, active_tenant_id: created.active_tenant_id });
+      setTenantListRevision(previous => previous + 1);
+      return created.name;
     } finally {
       setBusy(false);
     }
@@ -381,7 +397,13 @@ export default function PostgresConsole() {
         {identity && (
           <>
             <p className="text-sm text-slate-300">{identity.full_name} · Consulta em homologação</p>
-            {identity.role === 'super_admin' && <TenantSelector key={identity.id} active={identity.active_tenant_id} busy={busy} onSwitch={id => void switchTenant(id)} />}
+            {identity.role === 'super_admin' && (
+              <>
+                <TenantSelector key={identity.id + ':' + tenantListRevision}
+                  active={identity.active_tenant_id} busy={busy} onSwitch={id => void switchTenant(id)} />
+                {tenantCreation && <PostgresTenantCreator busy={busy} onCreate={createTenant} />}
+              </>
+            )}
             {!busy && identity.active_tenant_id && (
               <section key={identity.active_tenant_id} className="space-y-4">
                 <nav aria-label="Inventário e mapa" className="flex flex-wrap gap-2">

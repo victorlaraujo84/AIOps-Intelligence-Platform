@@ -32,7 +32,7 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
   assert.deepEqual(await (await imported('/status')).json(), {
-    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false, user_admin: false,
+    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false, user_admin: false, tenant_creation: false,
   });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
@@ -468,6 +468,67 @@ if (process.argv.includes('--tenant-users')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--create-tenants')) {
+  const globalAdmin = client();
+  const secondSession = client();
+  const tenantAdmin = client();
+  const path = '/tenants';
+  const login = (session, kind) => session('/login', {
+    data: { email: kind + '-auth@example.invalid', password: kind + '-ci-fixture-only' },
+  });
+  const add = (session, data, headers) => session(path, { data, headers });
+  const get = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const payload = { name: '  Tenant Novo CI  ', document: '  TESTE-020  ' };
+  assert.equal((await add(globalAdmin, payload)).status, 401);
+  assert.equal((await login(tenantAdmin, 'admin')).status, 204);
+  assert.equal((await add(tenantAdmin, payload)).status, 403);
+  assert.equal((await login(globalAdmin, 'global')).status, 204);
+  assert.equal((await get(globalAdmin, '/me')).active_tenant_id, null);
+  assert.equal((await add(globalAdmin, payload, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await add(globalAdmin, { ...payload, slug: '!!!' })).status, 422);
+  assert.equal((await add(globalAdmin, { ...payload, status: 'suspended' })).status, 422);
+
+  const response = await add(globalAdmin, payload);
+  assert.equal(response.status, 201);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
+  const first = await response.json();
+  assert.deepEqual(first, { id: first.id, name: 'Tenant Novo CI', slug: 'tenant-novo-ci', active_tenant_id: first.id });
+  assert.equal((await get(globalAdmin, '/me')).active_tenant_id, first.id);
+  assert.ok((await get(globalAdmin, path)).items.some(item => item.id === first.id));
+  assert.deepEqual((await get(tenantAdmin, path)).items.map(item => item.id), [tenantA]);
+  assert.equal((await add(globalAdmin, { name: 'Repetido', slug: 'TENANT__NOVO--CI' })).status, 409);
+
+  const locations = (await get(globalAdmin, '/inventory/locality-types')).items;
+  const categories = (await get(globalAdmin, '/inventory/asset-categories')).items;
+  assert.equal(locations.length, 9);
+  assert.ok(locations.some(item => item.code.toUpperCase() === 'DATACENTER_CLOUD'));
+  assert.equal(categories.length, 14);
+  assert.ok(categories.some(item => item.code === 'weather_station'));
+  for (const resource of ['sites', 'assets', 'services']) {
+    assert.deepEqual((await get(globalAdmin, '/inventory/' + resource)).items, []);
+  }
+
+  assert.equal((await login(secondSession, 'global')).status, 204);
+  assert.equal((await secondSession('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  const duplicate = { name: 'Tenant Concorrente', slug: 'tenant-ci-concorrente' };
+  const results = await Promise.all([add(globalAdmin, duplicate), add(secondSession, duplicate)]);
+  assert.deepEqual(results.map(result => result.status).sort(), [201, 409]);
+  const active = [first.id, tenantB];
+  const winner = results.findIndex(result => result.status === 201);
+  assert.equal((await results[winner].json()).active_tenant_id, active[winner]);
+  assert.equal((await get(globalAdmin, '/me')).active_tenant_id, first.id);
+  assert.equal((await get(secondSession, '/me')).active_tenant_id, tenantB);
+  for (const session of [globalAdmin, secondSession, tenantAdmin]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Cadastro de tenants validado por HTTPS com permissões, catálogos, sessão e conflito de identificador.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -499,6 +560,7 @@ const box = '/inventory/sites/map?west=-47&south=-24&east=-46&north=-23';
 const ownMap = await (await operator(box)).json();
 assert.deepEqual(ownMap.items.map(site => site.code), ['MAP-SITE']);
 assert.equal((await operator('/inventory/connectors')).status, 404);
+assert.equal((await operator('/tenants', { data: { name: 'Fixture' } })).status, 404);
 assert.equal((await operator('/tenant-users', { headers: { 'X-AIOps-Expected-Tenant': tenantA } })).status, 404);
 assert.equal((await operator('/inventory/topology/edges')).status, 200);
 assert.equal((await operator('/inventory/topology/edges', { data: {} })).status, 404);

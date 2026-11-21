@@ -67,6 +67,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
   const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
+  const tenantCreation = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_CREATE_TENANTS === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
   router.use((req, res, next) => {
@@ -84,7 +85,8 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites, user_admin: userAdmin });
+    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites,
+      user_admin: userAdmin, tenant_creation: tenantCreation });
   });
 
   router.post('/login', async (req, res) => {
@@ -120,6 +122,13 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     const token = authenticated(req, res);
     if (token) forward(res, await callCore('/auth/tenants' + queryFor(req, ['after', 'limit']), token));
   });
+
+  if (tenantCreation) {
+    router.post('/tenants', async (req, res) => {
+      const token = authenticated(req, res);
+      if (token) forward(res, await callCore('/auth/tenants', token, req.body ?? {}));
+    });
+  }
 
   router.post('/switch-tenant', async (req, res) => {
     const token = authenticated(req, res);
