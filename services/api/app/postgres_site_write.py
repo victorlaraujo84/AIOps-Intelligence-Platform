@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 import os
-from typing import Annotated, Literal
+from typing import Annotated
 from uuid import UUID
 
 import asyncpg
@@ -9,14 +9,13 @@ from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 from .postgres_inventory import COLUMNS, inventory_role_pool
+from .postgres_inventory_write import Criticality, Name, audit_inventory_write, inventory_write_transaction
 
 
 router = APIRouter(prefix="/api/v1/inventory/sites", tags=["inventory"])
 SITE_FIELDS = COLUMNS["sites"]
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 Code = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
 State = Annotated[str, StringConstraints(strip_whitespace=True, to_upper=True, pattern=r"^[A-Za-z]{2}$")]
-Criticality = Literal["critica", "alta", "media", "baixa"]
 
 CHECK_WRITER_ROLE = """
 SELECT pg_has_role(current_user, 'aiops_site_writer', 'SET')
@@ -83,43 +82,6 @@ def get_site_write_pool(request: Request) -> asyncpg.Pool:
     return pool
 
 
-@asynccontextmanager
-async def site_transaction(pool: asyncpg.Pool, identity: asyncpg.Record):
-    if identity["role"] not in {"super_admin", "tenant_admin", "tenant_operator"}:
-        raise HTTPException(403, "Permissão insuficiente para alterar sites.", headers=AUTH_HEADERS)
-    tenant = identity["active_tenant_id"]
-    if tenant is None:
-        raise HTTPException(409, "Selecione um tenant ativo.", headers=AUTH_HEADERS)
-
-    try:
-        async with pool.acquire(timeout=5) as connection:
-            async with connection.transaction():
-                await connection.execute("SET LOCAL ROLE aiops_site_writer")
-                await connection.execute(
-                    "SELECT pg_catalog.set_config('app.current_tenant_id', $1, true),"
-                    " pg_catalog.set_config('app.current_actor_id', $2, true)",
-                    str(tenant), str(identity["id"]),
-                )
-                active = await connection.fetchval("SELECT status = 'active' FROM public.tenants WHERE id = $1", tenant)
-                if not active:
-                    raise HTTPException(409, "Tenant ativo indisponível.", headers=AUTH_HEADERS)
-                yield connection, tenant
-    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError) as error:
-        if isinstance(error, asyncpg.UniqueViolationError) and error.constraint_name == "sites_tenant_id_code_key":
-            raise HTTPException(409, "Já existe um site com este código neste tenant.", headers=AUTH_HEADERS) from None
-        raise HTTPException(503, "Gravação de sites temporariamente indisponível.", headers=AUTH_HEADERS) from None
-
-
-async def audit_site(connection: asyncpg.Connection, tenant: UUID, identity: asyncpg.Record, action: str, site_id: UUID):
-    await connection.execute(
-        """
-        INSERT INTO public.audit_logs (tenant_id, actor_user_id, actor_role, action, resource_type, resource_id)
-        VALUES ($1, $2, $3, $4, 'site', $5)
-        """,
-        tenant, identity["id"], identity["role"], action, str(site_id),
-    )
-
-
 @router.post("", status_code=201)
 async def create_site(
     body: CreateSite,
@@ -127,7 +89,7 @@ async def create_site(
     identity: Annotated[asyncpg.Record, Depends(get_current_session)],
     pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
 ):
-    async with site_transaction(pool, identity) as (connection, tenant):
+    async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
         site = await connection.fetchrow(
             f"""
             INSERT INTO public.sites (tenant_id, code, name, municipality, uf, criticality)
@@ -136,7 +98,7 @@ async def create_site(
             """,
             tenant, body.code.upper(), body.name, body.municipality, body.uf, body.criticality,
         )
-        await audit_site(connection, tenant, identity, "SITE_CREATED", site["id"])
+        await audit_inventory_write(connection, tenant, identity, "SITE_CREATED", "site", site["id"])
     response.headers.update(AUTH_HEADERS)
     return dict(site)
 
@@ -155,7 +117,7 @@ async def update_site(
 
     # Os únicos nomes possíveis vêm dos campos declarados em UpdateSite.
     assignments = ", ".join(f"{field} = ${index}" for index, field in enumerate(changes, 3))
-    async with site_transaction(pool, identity) as (connection, tenant):
+    async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
         site = await connection.fetchrow(
             f"""
             UPDATE public.sites SET {assignments}, updated_at_utc = now()
@@ -165,6 +127,6 @@ async def update_site(
         )
         if site is None:
             raise HTTPException(404, "Site não encontrado.", headers=AUTH_HEADERS)
-        await audit_site(connection, tenant, identity, "SITE_UPDATED", site_id)
+        await audit_inventory_write(connection, tenant, identity, "SITE_UPDATED", "site", site_id)
     response.headers.update(AUTH_HEADERS)
     return dict(site)
