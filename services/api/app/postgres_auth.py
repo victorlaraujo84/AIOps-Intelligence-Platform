@@ -61,6 +61,15 @@ class SelectTenantRequest(BaseModel):
     tenant_id: UUID
 
 
+def derive_scrypt(password: str, salt: str) -> bytes:
+    return hashlib.scrypt(password.encode("utf-8"), salt=salt.encode("ascii"), n=16384, r=8, p=1, dklen=64)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    return f"scrypt:{salt}:{derive_scrypt(password, salt).hex()}"
+
+
 def verify_scrypt(password: str, stored_hash: str) -> bool:
     match = PASSWORD_HASH.fullmatch(stored_hash)
     if match is None:
@@ -68,10 +77,9 @@ def verify_scrypt(password: str, stored_hash: str) -> bool:
     salt, expected = match.groups()
     # O Web Node usa os caracteres hexadecimais do salt como bytes UTF-8.
     try:
-        password_bytes = password.encode("utf-8")
+        derived = derive_scrypt(password, salt)
     except UnicodeError:
         return False
-    derived = hashlib.scrypt(password_bytes, salt=salt.encode("ascii"), n=16384, r=8, p=1, dklen=64)
     return hmac.compare_digest(derived, bytes.fromhex(expected))
 
 

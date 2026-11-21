@@ -32,7 +32,7 @@ if (process.argv.includes('--imported-pilot')) {
   assert.equal(home.headers.get('Location'), '/postgres-inventory');
   assert.equal((await fetch(origin + '/api/auth/status')).status, 404);
   assert.deepEqual(await (await imported('/status')).json(), {
-    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false,
+    enabled: true, pilot_only: true, site_writes: false, asset_writes: false, service_writes: false, user_admin: false,
   });
   assert.equal((await imported('/inventory/sites')).status, 401);
   assert.equal((await imported('/login', {
@@ -389,6 +389,85 @@ if (process.argv.includes('--topology-writes')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--tenant-users')) {
+  const a = client();
+  const b = client();
+  const globalAdmin = client();
+  const operator = client();
+  const viewer = client();
+  const anotherSession = client();
+  const path = '/tenant-users';
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, email, password) => session('/login', { data: { email, password } });
+  const list = async (session, tenant, query = '') => {
+    const response = await session(path + query, { headers: scope(tenant) });
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const loginFixture = (session, name, role = name) =>
+    login(session, name + '-auth@example.invalid', role + '-ci-fixture-only');
+
+  assert.equal((await a(path, { headers: scope(tenantA) })).status, 401);
+  assert.equal((await loginFixture(a, 'admin')).status, 204);
+  assert.equal((await loginFixture(b, 'admin-b', 'admin')).status, 204);
+  assert.equal((await loginFixture(globalAdmin, 'global')).status, 204);
+  assert.equal((await loginFixture(operator, 'operator')).status, 204);
+  assert.equal((await a(path)).status, 422);
+  assert.equal((await operator(path, { headers: scope(tenantA) })).status, 403);
+  assert.equal((await globalAdmin(path, { headers: scope(tenantA) })).status, 409);
+  assert.equal((await globalAdmin('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await globalAdmin(path, { headers: scope(tenantA) })).status, 409);
+  assert.ok((await list(globalAdmin, tenantB)).items.some(row => row.email === 'admin-b-auth@example.invalid'));
+  assert.equal((await b(path, { headers: scope(tenantA) })).status, 409);
+  const { items, next_after: after } = await list(a, tenantA, '?limit=1');
+  assert.ok(after);
+  assert.notEqual((await list(a, tenantA, '?limit=1&after=' + after)).items[0].id, items[0].id);
+
+  const email = 'tenant-user-smoke@example.invalid';
+  const password = 'viewer-created-smoke-only';
+  const data = { email: '  ' + email.toUpperCase() + '  ', full_name: 'Leitor cadastrado', password };
+  const add = (session, tenant, payload = data) => session(path, { data: payload, headers: scope(tenant) });
+  assert.equal((await add(operator, tenantA)).status, 403);
+  assert.equal((await add(a, tenantA, { ...data, tenant_id: tenantB })).status, 422);
+  assert.equal((await add(a, tenantA, { ...data, role: 'super_admin' })).status, 422);
+  assert.equal((await add(a, tenantA, { ...data, password: '123' })).status, 422);
+  const created = await add(a, tenantA);
+  assert.equal(created.status, 201);
+  const { id } = await created.json();
+  assert.equal((await add(a, tenantA)).status, 409);
+  const own = (await list(a, tenantA, '?tenant_id=' + tenantB)).items;
+  assert.deepEqual(own.find(row => row.id === id), {
+    id, email, full_name: data.full_name, role: 'tenant_viewer', is_active: true,
+  });
+  assert.ok(!(await list(b, tenantB)).items.some(row => row.id === id));
+
+  const change = (session, tenant, userId, active, extra = {}) => session(path + '/' + userId + '/status', {
+    method: 'PATCH', data: { is_active: active }, headers: { ...scope(tenant), ...extra },
+  });
+  assert.equal((await login(viewer, email, password)).status, 204);
+  assert.equal((await login(anotherSession, email, password)).status, 204);
+  assert.equal((await viewer(path, { headers: scope(tenantA) })).status, 403);
+  assert.equal((await change(b, tenantB, id, false)).status, 404);
+  assert.equal((await change(a, tenantA, id, false, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  const ownAdmin = own.find(row => row.email === 'admin-auth@example.invalid');
+  assert.equal((await change(a, tenantA, ownAdmin.id, false)).status, 422);
+  const disabled = await change(a, tenantA, id, false);
+  assert.equal(disabled.status, 200);
+  assert.deepEqual(await disabled.json(), { id, is_active: false });
+  assert.equal((await change(a, tenantA, id, false)).status, 200);
+  for (const stale of [viewer, anotherSession]) assert.equal((await stale('/me')).status, 401);
+  assert.equal((await login(client(), email, password)).status, 401);
+  assert.equal((await change(a, tenantA, id, true)).status, 200);
+  for (const stale of [viewer, anotherSession]) assert.equal((await stale('/me')).status, 401);
+  const relogged = client();
+  assert.equal((await login(relogged, email, password)).status, 204);
+  for (const session of [a, b, globalAdmin, operator, relogged]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Administração de usuários validada por HTTPS com papéis, tenant ativo, auditoria verificável e revogação de sessões.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -420,6 +499,7 @@ const box = '/inventory/sites/map?west=-47&south=-24&east=-46&north=-23';
 const ownMap = await (await operator(box)).json();
 assert.deepEqual(ownMap.items.map(site => site.code), ['MAP-SITE']);
 assert.equal((await operator('/inventory/connectors')).status, 404);
+assert.equal((await operator('/tenant-users', { headers: { 'X-AIOps-Expected-Tenant': tenantA } })).status, 404);
 assert.equal((await operator('/inventory/topology/edges')).status, 200);
 assert.equal((await operator('/inventory/topology/edges', { data: {} })).status, 404);
 assert.equal((await operator('/inventory/sites', { data: { name: 'fixture', code: 'fixture' } })).status, 404);

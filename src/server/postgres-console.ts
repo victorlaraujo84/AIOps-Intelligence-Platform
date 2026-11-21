@@ -66,6 +66,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const router = Router();
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
+  const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
 
   router.use((req, res, next) => {
@@ -83,7 +84,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   });
 
   router.get('/status', (_req, res) => {
-    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites });
+    res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites, user_admin: userAdmin });
   });
 
   router.post('/login', async (req, res) => {
@@ -135,6 +136,30 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     }
     forward(res, result);
   });
+
+  if (userAdmin) {
+    async function tenantUsers(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.userId;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de usuário ou tenant inválido.' });
+        return;
+      }
+      const path = '/tenant-users';
+      if (req.method === 'GET') {
+        forward(res, await callCore(path + queryFor(req, ['after', 'limit']), token, undefined, expected));
+      } else if (id) {
+        forward(res, await callCore(path + '/' + id + '/status', token, req.body ?? {}, expected, 'PATCH'));
+      } else {
+        forward(res, await callCore(path, token, req.body ?? {}, expected));
+      }
+    }
+    router.get('/tenant-users', tenantUsers);
+    router.post('/tenant-users', tenantUsers);
+    router.patch('/tenant-users/:userId/status', tenantUsers);
+  }
 
   router.get('/inventory/sites/map', async (req, res) => {
     const token = authenticated(req, res);

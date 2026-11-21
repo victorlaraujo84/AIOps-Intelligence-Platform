@@ -249,6 +249,10 @@ docker compose -f compose.yaml -f compose.postgres-console.yaml -f compose.postg
 
 A carga grava o inventário e os hashes de autenticação em uma transação, somente no banco dedicado e vazio. Inicie uma nova sessão no piloto com as credenciais da cópia. O piloto representa o momento do backup. Para voltar ao console original, acesse o endereço habitual e pare o projeto piloto com `docker compose stop` usando os mesmos arquivos e nome de projeto.
 
+#### Administração de usuários do tenant no piloto
+
+Aplique a migração 019 antes de habilitar `AIOPS_POSTGRES_PILOT_MANAGE_USERS=true` e recrie a API e o Web do piloto. A aba **Usuários** fica disponível para administradores. O administrador global seleciona primeiro o tenant. A aba lista contas do tenant, cria administradores de tenant, operadores e leitores, e permite ativar ou desativar essas contas. A desativação encerra as sessões da conta na mesma transação que registra a auditoria. Para retirar o acesso pelo navegador, remova a flag e recrie o Web. A migração adiciona funções de banco e pode permanecer instalada com a flag desabilitada.
+
 #### Cadastro e edição de sites no piloto
 
 Configure `AIOPS_POSTGRES_SITE_WRITE_DSN` com uma conta dedicada ao papel de sites e defina `AIOPS_POSTGRES_PILOT_WRITE_SITES=true` no ambiente do projeto piloto. Recrie o Web e a API com os mesmos arquivos Compose. O formulário permite cadastrar e editar sites, incluindo vínculos com concessões e tipos de localidade do tenant selecionado. Cada alteração é auditada. As gravações pertencem ao banco PostgreSQL do piloto.

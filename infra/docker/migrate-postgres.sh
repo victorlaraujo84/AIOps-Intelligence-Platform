@@ -27,6 +27,7 @@ site_catalog=$(sha256sum 015_site_catalog.sql)
 site_location=$(sha256sum 016_site_location.sql)
 site_map=$(sha256sum 017_site_map_index.sql)
 tenant_list=$(sha256sum 018_auth_tenant_list.sql)
+tenant_user_admin=$(sha256sum 019_tenant_user_admin.sql)
 exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="initial_sha=${initial%% *}" --set="hybrid_sha=${hybrid%% *}" \
   --set="reader_sha=${reader%% *}" --set="links_sha=${links%% *}" \
@@ -40,5 +41,5 @@ exec psql --no-psqlrc --no-password --set=ON_ERROR_STOP=1 \
   --set="site_catalog_sha=${site_catalog%% *}" \
   --set="site_location_sha=${site_location%% *}" \
   --set="site_map_sha=${site_map%% *}" \
-  --set="tenant_list_sha=${tenant_list%% *}" \
+  --set="tenant_list_sha=${tenant_list%% *}" --set="tenant_user_admin_sha=${tenant_user_admin%% *}" \
   --set="adopt_legacy=$adopt_legacy" --file=runner/apply.sql

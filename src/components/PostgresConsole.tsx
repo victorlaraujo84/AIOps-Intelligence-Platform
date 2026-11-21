@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
+import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
 import { PostgresServiceEditor } from './PostgresServiceEditor.tsx';
@@ -298,16 +299,18 @@ export default function PostgresConsole() {
   const [serviceWrites, setServiceWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [resource, setResource] = useState(resources[0]);
+  const [userAdmin, setUserAdmin] = useState(false);
+  const [selectedResource, setResource] = useState(resources[0]);
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; user_admin: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
         setServiceWrites(status.service_writes);
+        setUserAdmin(status.user_admin);
       })
       .catch(() => { if (!controller.signal.aborted) setShowMainLink(true); });
     void request<Identity>('/me', { signal: controller.signal })
@@ -353,6 +356,8 @@ export default function PostgresConsole() {
     }
   }
 
+  const mayAdministerUsers = userAdmin && (identity?.role === 'super_admin' || identity?.role === 'tenant_admin');
+  const resource = selectedResource.id === 'users' && !mayAdministerUsers ? resources[0] : selectedResource;
   const mapView = resource.id === 'map';
   const mayWrite = identity !== null
     && ['super_admin', 'tenant_admin', 'tenant_operator'].includes(identity.role);
@@ -380,7 +385,8 @@ export default function PostgresConsole() {
             {!busy && identity.active_tenant_id && (
               <section key={identity.active_tenant_id} className="space-y-4">
                 <nav aria-label="Inventário e mapa" className="flex flex-wrap gap-2">
-                  {[...resources, { id: 'map', name: 'Mapa', columns: [] }].map(item =>
+                  {[...resources, { id: 'map', name: 'Mapa', columns: [] },
+                    ...(mayAdministerUsers ? [{ id: 'users', name: 'Usuários', columns: [] }] : [])].map(item =>
                     <button key={item.id} aria-pressed={item.id === resource.id} className={button} onClick={() => setResource(item)}>{item.name}</button>
                   )}
                 </nav>
@@ -391,6 +397,8 @@ export default function PostgresConsole() {
                   <EditableSites tenant={identity.active_tenant_id} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
                   <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
+                ) : resource.id === 'users' ? (
+                  <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />
                 ) : resource.id === 'topology' ? (
                   <PostgresTopology tenant={identity.active_tenant_id} mayWrite={mayWrite && assetWrites} />
                 ) : resource.id === 'services' ? (
