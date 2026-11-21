@@ -178,7 +178,9 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     }
   });
 
-  function writeInventory(resource: 'sites' | 'assets' | 'services', suffix: '' | '/verify-coords' = '') {
+  type WritableResource = 'sites' | 'assets' | 'services' | 'concessions' | 'locality-types' | 'asset-categories';
+
+  function writeInventory(resource: WritableResource, suffix: '' | '/verify-coords' = '') {
     return async (req: Request, res: Response) => {
       const token = authenticated(req, res);
       if (!token) return;
@@ -195,11 +197,14 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   }
 
   if (siteWrites) {
+    router.post('/inventory/concessions', writeInventory('concessions'));
+    router.post('/inventory/locality-types', writeInventory('locality-types'));
     router.post('/inventory/sites', writeInventory('sites'));
     router.patch('/inventory/sites/:id', writeInventory('sites'));
     router.patch('/inventory/sites/:id/verify-coords', writeInventory('sites', '/verify-coords'));
   }
   if (assetWrites) {
+    router.post('/inventory/asset-categories', writeInventory('asset-categories'));
     router.post('/inventory/assets', writeInventory('assets'));
     router.patch('/inventory/assets/:id', writeInventory('assets'));
   }

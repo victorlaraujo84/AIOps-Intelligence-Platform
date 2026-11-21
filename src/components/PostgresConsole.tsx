@@ -6,6 +6,7 @@ import { Message, PagedData } from './PostgresInventoryFields.tsx';
 import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.tsx';
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
+import { isWritableCatalog, PostgresCatalogCreate } from './PostgresCatalogCreate.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
 import { PostgresServiceEditor } from './PostgresServiceEditor.tsx';
 import { PostgresAssetEditor } from './PostgresAssetEditor.tsx';
@@ -419,6 +420,10 @@ export default function PostgresConsole() {
                   <EditableSites tenant={identity.active_tenant_id} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
                   <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
+                ) : isWritableCatalog(resource.id) ? (
+                  <PostgresCatalogCreate<Row> key={resource.id} catalog={resource.id} tenant={identity.active_tenant_id}
+                    mayWrite={mayWrite && (resource.id === 'asset-categories' ? assetWrites : siteWrites)}
+                    render={rows => <InventoryTable columns={resource.columns} rows={rows} />} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />
                 ) : resource.id === 'topology' ? (

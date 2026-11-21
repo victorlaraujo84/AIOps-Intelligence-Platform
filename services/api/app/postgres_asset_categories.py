@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
 from .postgres_asset_write import get_asset_write_pool
-from .postgres_auth import AUTH_HEADERS, get_current_session
+from .postgres_auth import AUTH_HEADERS
 from .postgres_inventory import COLUMNS
-from .postgres_inventory_write import Domain, Name, audit_inventory_write, inventory_write_transaction
+from .postgres_inventory_write import Domain, Name, audit_inventory_write, inventory_write_identity, inventory_write_transaction
 
 
 router = APIRouter(prefix="/api/v1/inventory/asset-categories", tags=["inventory"])
@@ -28,7 +28,7 @@ class CreateAssetCategory(BaseModel):
 async def create_category(
     body: CreateAssetCategory,
     response: Response,
-    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
     pool: Annotated[asyncpg.Pool, Depends(get_asset_write_pool)],
 ):
     code = re.sub(r"[^a-z0-9_]", "_", body.code.lower())

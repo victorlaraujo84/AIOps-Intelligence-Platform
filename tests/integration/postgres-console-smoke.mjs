@@ -529,6 +529,73 @@ if (process.argv.includes('--create-tenants')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--catalog-writes')) {
+  const a = client();
+  const b = client();
+  const viewer = client();
+  const global = client();
+  const login = (session, name, password) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const put = (session, path, tenant, data, headers = {}) =>
+    session('/inventory/' + path, { data, headers: { ...scope(tenant), ...headers } });
+  assert.equal((await login(a, 'operator', 'operator')).status, 204);
+  assert.equal((await login(b, 'operator-b', 'operator')).status, 204);
+  assert.equal((await login(viewer, 'viewer', 'viewer')).status, 204);
+  assert.equal((await login(global, 'global', 'global')).status, 204);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  const specs = [
+    ['asset-categories', { code: ' Catalogo Portal ', label: 'Categoria Portal', domain: 'ti' }, 'catalogo_portal'],
+    ['concessions', { code: ' catalogo-portal ', name: 'Concessão Portal', region: 'Sul' }, 'CATALOGO-PORTAL'],
+    ['locality-types', { code: ' Catalogo Portal ', label: 'Localidade Portal', description: 'Descrição' }, 'CATALOGO_PORTAL'],
+  ];
+  const ids = new Map();
+  for (const [resource, data, code] of specs) {
+    const path = '/inventory/' + resource;
+    assert.equal((await put(client(), resource, tenantA, data)).status, 401);
+    assert.equal((await a(path, { data })).status, 422);
+    assert.equal((await put(viewer, resource, tenantA, data)).status, 403);
+    assert.equal((await put(global, resource, tenantA, data)).status, 409);
+    assert.equal((await put(a, resource, tenantA, { ...data, tenant_id: tenantB })).status, 422);
+    assert.equal((await put(a, resource, tenantA, data, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    const response = await put(a, resource, tenantA, data);
+    assert.equal(response.status, 201);
+    assert.equal(response.headers.get('Cache-Control'), 'no-store');
+    const item = await response.json();
+    assert.equal(item.code, code);
+    assert.equal(item.tenant_id, tenantA);
+    for (const [key, value] of Object.entries(data)) {
+      if (key !== 'code') assert.equal(item[key], value);
+    }
+    ids.set(resource, item.id);
+    assert.equal((await put(a, resource, tenantA, { ...data, code })).status, 409);
+    assert.ok((await (await viewer(path)).json()).items.some(row => row.id === item.id));
+    assert.ok(!(await (await b(path)).json()).items.some(row => row.id === item.id));
+  }
+
+  assert.equal((await put(b, 'asset-categories', tenantB, specs[0][1])).status, 201);
+  const site = await put(a, 'sites', tenantA, {
+    code: 'CATALOG-LINK', name: 'Site com catálogos novos',
+    concession_id: ids.get('concessions'), locality_type_id: ids.get('locality-types'),
+  });
+  assert.equal(site.status, 201);
+  const savedSite = await site.json();
+  assert.deepEqual([savedSite.concession_id, savedSite.locality_type_id],
+    [ids.get('concessions'), ids.get('locality-types')]);
+  const asset = await put(a, 'assets', tenantA, {
+    name: 'Ativo com categoria nova', site_id: savedSite.id, category_id: ids.get('asset-categories'),
+  });
+  assert.equal(asset.status, 201);
+  const savedAsset = await asset.json();
+  assert.deepEqual([savedAsset.category_id, savedAsset.domain], [ids.get('asset-categories'), 'ti']);
+  for (const session of [a, b, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Cadastros do catálogo, isolamento e vínculos de sites e ativos verificados por HTTPS.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -560,6 +627,9 @@ const box = '/inventory/sites/map?west=-47&south=-24&east=-46&north=-23';
 const ownMap = await (await operator(box)).json();
 assert.deepEqual(ownMap.items.map(site => site.code), ['MAP-SITE']);
 assert.equal((await operator('/inventory/connectors')).status, 404);
+for (const resource of ['asset-categories', 'concessions', 'locality-types']) {
+  assert.equal((await operator('/inventory/' + resource, { data: {} })).status, 404);
+}
 assert.equal((await operator('/tenants', { data: { name: 'Fixture' } })).status, 404);
 assert.equal((await operator('/tenant-users', { headers: { 'X-AIOps-Expected-Tenant': tenantA } })).status, 404);
 assert.equal((await operator('/inventory/topology/edges')).status, 200);
