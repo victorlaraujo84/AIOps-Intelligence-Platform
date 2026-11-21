@@ -22,7 +22,8 @@ WITH known(version, filename, sha256) AS (
     (3, '003_tenant_reader.sql', :'reader_sha'),
     (4, '004_tenant_links.sql', :'links_sha'),
     (5, '005_inventory_parity.sql', :'inventory_sha'),
-    (6, '006_identity_sessions.sql', :'identity_sha')
+    (6, '006_identity_sessions.sql', :'identity_sha'),
+    (7, '007_authenticator.sql', :'auth_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -34,13 +35,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 3), false) AS has_reader,
   COALESCE(bool_or(m.version = 4), false) AS has_links,
   COALESCE(bool_or(m.version = 5), false) AS has_inventory,
-  COALESCE(bool_or(m.version = 6), false) AS has_identity
+  COALESCE(bool_or(m.version = 6), false) AS has_identity,
+  COALESCE(bool_or(m.version = 7), false) AS has_auth
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_auth
+  \if :has_identity
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 007 sem versão 006'; END $$;
+  \endif
 \endif
 
 \if :has_identity
@@ -136,6 +145,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../006_identity_sessions.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (6, '006_identity_sessions.sql', :'identity_sha');
+\endif
+
+\if :has_auth
+\else
+  \ir ../007_authenticator.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (7, '007_authenticator.sql', :'auth_sha');
 \endif
 
 COMMIT;

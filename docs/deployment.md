@@ -98,6 +98,20 @@ python3 scripts/rehearse-inventory-migration.py /caminho/privado/snapshot.db \
 
 Use `--env-file` se o projeto usa um arquivo de variáveis diferente de `.env`. O modo protegido envia a operação diretamente ao PostgreSQL e imprime apenas as contagens. Ele confere os vínculos, papéis, estado da conta e a igualdade do hash scrypt antes de reverter a transação. As sessões permanecem fora da transferência. Mantenha o backup em armazenamento restrito e use o modo apenas no Docker de homologação dedicado.
 
+### Autenticação FastAPI em homologação
+
+A migração 007 disponibiliza a autenticação PostgreSQL para o perfil interno `core`. Em um banco de homologação, crie uma conta de serviço dedicada e conceda o papel do autenticador. No `psql`, configure a senha de forma interativa:
+
+```sql
+CREATE ROLE aiops_auth_runtime LOGIN;
+GRANT aiops_authenticator TO aiops_auth_runtime;
+\password aiops_auth_runtime
+```
+
+Forneça `AIOPS_POSTGRES_AUTH_DSN` e um `AIOPS_POSTGRES_AUTH_SESSION_SECRET` próprio, aleatório, de pelo menos 32 bytes. Os valores devem ficar no ambiente protegido. Sem essas configurações, a autenticação FastAPI fica desabilitada. O serviço rejeita o uso da conta administrativa de migração.
+
+Os endpoints internos são `POST /api/v1/auth/login`, `GET /api/v1/auth/me` e `POST /api/v1/auth/logout`. Use o token Bearer devolvido pelo login. Contas vinculadas a tenant recebem seu próprio contexto. Um administrador global começa com o tenant ativo vazio, até existir um fluxo autorizado de seleção nesse backend. Mantenha as rotas na rede interna de homologação. O console Web segue autenticando pelo SQLite.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
