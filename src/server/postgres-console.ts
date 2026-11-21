@@ -1,3 +1,4 @@
+import { validateOutboundHttpsUrl } from './outbound-http.ts';
 import { getOpenMeteoCurrent } from './open-meteo-current.ts';
 import { Router, type CookieOptions, type Request, type Response } from 'express';
 import { SlidingWindowRateLimiter } from './security.ts';
@@ -69,6 +70,8 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
   const connectorWrites = pilotOnly && process.env.AIOPS_POSTGRES_CONNECTOR_WRITES === 'true';
+  const notifications = pilotOnly && process.env.AIOPS_POSTGRES_NOTIFICATIONS === 'true';
+  const notificationWrites = notifications && process.env.AIOPS_POSTGRES_NOTIFICATION_WRITES === 'true';
   const incidentWrites = pilotOnly && process.env.AIOPS_POSTGRES_INCIDENT_WRITES === 'true';
   const itsm = pilotOnly && process.env.AIOPS_POSTGRES_ITSM === 'true';
   const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
@@ -91,7 +94,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
 
   router.get('/status', (_req, res) => {
     res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites,
-      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites, connector_writes: connectorWrites, itsm });
+      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites, connector_writes: connectorWrites, notifications, notification_writes: notificationWrites, itsm });
   });
 
   router.post('/login', async (req, res) => {
@@ -270,6 +273,39 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.post('/inventory/connectors/:id/open-meteo/disable', weather('disable'));
     router.get('/inventory/connectors/:id/open-meteo/schedule', weather('schedule'));
     router.post('/inventory/connectors/:id/open-meteo/schedule', weather('schedule'));
+  }
+
+  if (notifications) {
+    async function webhook(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.id;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de canal ou tenant inválido.' });
+        return;
+      }
+      const base = '/inventory/webhooks';
+      if (req.method === 'POST') {
+        const value = req.body?.origin;
+        const parsed = typeof value === 'string' && value.length <= 255 ? validateOutboundHttpsUrl(value).parsedUrl : undefined;
+        if (!parsed || parsed.href !== parsed.origin + '/' || parsed.port) {
+          res.status(422).json({ error: 'Informe somente a origem HTTPS pública do destino, como https://eventos.exemplo.com.' });
+          return;
+        }
+        forward(res, await callCore(base, token, { ...req.body, origin: parsed.origin }, expected));
+      } else if (req.method === 'PATCH') {
+        forward(res, await callCore(base + '/' + id + '/status', token, req.body ?? {}, expected, 'PATCH'));
+      } else {
+        forward(res, await callCore(id ? base + '/' + id + '/deliveries' : base, token, undefined, expected));
+      }
+    }
+    router.get('/inventory/webhooks', webhook);
+    router.get('/inventory/webhooks/:id/deliveries', webhook);
+    if (notificationWrites) {
+      router.post('/inventory/webhooks', webhook);
+      router.patch('/inventory/webhooks/:id/status', webhook);
+    }
   }
 
   if (itsm) {

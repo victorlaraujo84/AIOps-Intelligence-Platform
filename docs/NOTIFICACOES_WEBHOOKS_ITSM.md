@@ -94,3 +94,7 @@ A migração 028 grava mudanças de estado na fila interna na mesma transação 
 O papel `aiops_notification_worker` permite reservar um lote com prazo de processamento e concluir apenas a tentativa cujo prazo ainda está válido. Falhas temporárias usam espera exponencial com variação aleatória. Falha permanente ou oito tentativas levam o evento a `DEAD_LETTER`. O estado `PROCESSED` é o reconhecimento do processamento interno. A comprovação de entrega exige o registro separado da tentativa no destino.
 
 A migração prepara o armazenamento e a recuperação de transições. O provisionamento do worker, o roteamento por política, as entregas e a abertura de incidentes por ingestão fazem parte das próximas etapas.
+
+### Entregas de webhook por canal
+
+A migração 034 aplica políticas por tipo de evento e criticidade aos novos eventos de incidente. Cada canal autorizado recebe uma operação durável com chave de idempotência e tentativas próprias. O worker exige origem autorizada e arquivo privado vinculado ao tenant. Respostas temporárias usam espera exponencial, com suporte a `Retry-After`, e chegam à fila de falha definitiva após oito tentativas. Confira a habilitação e o contrato de assinatura no [runbook de implantação](deployment.md#webhooks-de-incidentes).

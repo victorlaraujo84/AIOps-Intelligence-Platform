@@ -10,6 +10,7 @@ from .postgres_auth import postgres_auth_lifespan, router as postgres_auth_route
 from .postgres_connector_ingest import router as postgres_ingest_router
 from .postgres_incidents import router as postgres_incidents_router
 from .postgres_inventory import postgres_inventory_lifespan, router as postgres_inventory_router
+from .postgres_webhooks import router as postgres_webhooks_router
 from .postgres_itsm import router as postgres_itsm_router
 from .postgres_service_dependencies import router as postgres_service_dependencies_router
 from .postgres_service_write import postgres_service_write_lifespan, router as postgres_service_write_router
@@ -43,6 +44,7 @@ app = FastAPI(
 
 app.include_router(postgres_auth_router)
 app.include_router(postgres_tenant_users_router)
+app.include_router(postgres_webhooks_router)
 app.include_router(postgres_inventory_router)
 app.include_router(postgres_incidents_router)
 app.include_router(postgres_ingest_router)
