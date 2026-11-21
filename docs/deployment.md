@@ -263,6 +263,10 @@ Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` com uma conta dedicada ao papel de at
 
 As alterações são feitas no PostgreSQL do piloto, com auditoria e verificação do tenant selecionado. Para devolver os ativos ao modo de consulta, remova a flag e recrie o Web.
 
+#### Enlaces entre ativos no piloto
+
+Abra **Topologia** para consultar os enlaces do tenant ativo. Com a escrita de ativos habilitada, use **Novo enlace** para selecionar origem e destino, informar o tipo e, opcionalmente, o provedor, a capacidade em Mbps e a redundância. A remoção requer confirmação no navegador. O PostgreSQL bloqueia ciclos e vínculos entre tenants, audita as inclusões e remoções e mantém os ativos vinculados. Para deixar a aba em modo de consulta, desabilite a flag de escrita de ativos e recrie o Web.
+
 #### Cadastro e edição de serviços no piloto
 
 Configure `AIOPS_POSTGRES_SERVICE_WRITE_DSN` com uma conta dedicada ao papel de serviços e defina `AIOPS_POSTGRES_PILOT_WRITE_SERVICES=true`. Recrie o Web e a API do piloto. Em **Serviços**, use **Novo serviço** ou **Editar**. Informe o código no cadastro e preencha a meta de SLA em percentual de 0 a 100. Deixe a meta em branco para omitir ou remover o valor. A equipe responsável e a descrição são opcionais.

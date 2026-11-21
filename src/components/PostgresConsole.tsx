@@ -3,6 +3,7 @@ import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { ConsoleError, errorMessage, post, request } from '../lib/postgres-console.ts';
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
+import { PostgresTopology } from './PostgresTopology.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
 import { PostgresServiceEditor } from './PostgresServiceEditor.tsx';
 import { PostgresAssetEditor } from './PostgresAssetEditor.tsx';
@@ -21,6 +22,7 @@ const resources: ReadonlyArray<{ id: string; name: string; columns: readonly Col
   { id: 'sites', name: 'Sites', columns: [['code', 'Código'], ['name', 'Nome'], ['municipality', 'Município'], ['uf', 'UF'], ['coord_precision', 'Coordenadas']] },
   { id: 'assets', name: 'Ativos', columns: [['name', 'Nome'], ['hostname', 'Hostname'], ['domain', 'Domínio'], ['operational_state', 'Estado']] },
   { id: 'services', name: 'Serviços', columns: [['code', 'Código'], ['name', 'Nome'], ['owner_team', 'Equipe'], ['sla_target_pct', 'Meta de SLA (%)'], ['operational_state', 'Estado']] },
+  { id: 'topology', name: 'Topologia', columns: [] },
   { id: 'asset-categories', name: 'Categorias', columns: [['code', 'Código'], ['label', 'Rótulo'], ['domain', 'Domínio']] },
   { id: 'concessions', name: 'Concessões', columns: [['code', 'Código'], ['name', 'Nome'], ['region', 'Região']] },
   { id: 'locality-types', name: 'Tipos de localidade', columns: [['code', 'Código'], ['label', 'Rótulo']] },
@@ -389,6 +391,8 @@ export default function PostgresConsole() {
                   <EditableSites tenant={identity.active_tenant_id} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
                   <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
+                ) : resource.id === 'topology' ? (
+                  <PostgresTopology tenant={identity.active_tenant_id} mayWrite={mayWrite && assetWrites} />
                 ) : resource.id === 'services' ? (
                   <ServicesInventory tenant={identity.active_tenant_id} columns={resource.columns} mayWrite={mayWrite && serviceWrites} />
                 ) : (

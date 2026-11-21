@@ -175,6 +175,29 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.patch('/inventory/services/:id', writeInventory('services'));
   }
 
+  const topologyEdges = '/inventory/topology/edges';
+  router.get(topologyEdges, async (req, res) => {
+    const token = authenticated(req, res);
+    if (token) forward(res, await callCore(topologyEdges + queryFor(req, ['after', 'limit']), token));
+  });
+
+  if (assetWrites) {
+    async function mutateTopology(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      const id = req.params.edgeId;
+      if (!expected || !UUID_PATTERN.test(expected) || (id && !UUID_PATTERN.test(id))) {
+        res.status(422).json({ error: 'Identificador de enlace ou tenant inválido.' });
+        return;
+      }
+      if (id) forward(res, await callCore(topologyEdges + '/' + id, token, undefined, expected, 'DELETE'));
+      else forward(res, await callCore(topologyEdges, token, req.body ?? {}, expected));
+    }
+    router.post(topologyEdges, mutateTopology);
+    router.delete(topologyEdges + '/:edgeId', mutateTopology);
+  }
+
   function dependencyPath(req: Request, res: Response): string | undefined {
     const { serviceId, dependencyId } = req.params;
     if (!UUID_PATTERN.test(serviceId) || (dependencyId && !UUID_PATTERN.test(dependencyId))) {

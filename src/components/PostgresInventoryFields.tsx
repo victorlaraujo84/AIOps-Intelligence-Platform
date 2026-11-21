@@ -19,20 +19,21 @@ export async function loadCatalog(resource: string, signal: AbortSignal): Promis
   return items;
 }
 
-export function CatalogField({ name, label, choices, initial, disabled }: {
+export function CatalogField({ name, label, choices, initial, disabled, required = false }: {
   name: string;
   label: string;
   choices: Choice[];
   initial: string;
   disabled: boolean;
+  required?: boolean;
 }) {
   const id = useId();
   const [selected, setSelected] = useState(initial);
   return (
     <div className="space-y-1 text-sm">
       <label htmlFor={id}>{label}</label>
-      <select id={id} className={field} name={name} value={selected} onChange={event => setSelected(event.target.value)} disabled={disabled}>
-        <option value="">Sem vínculo</option>
+      <select id={id} className={field} name={name} value={selected} onChange={event => setSelected(event.target.value)} disabled={disabled} required={required}>
+        <option value="" disabled={required}>{required ? 'Selecione uma opção' : 'Sem vínculo'}</option>
         {initial && !choices.some(choice => choice.id === initial) && <option value={initial}>Vínculo atual</option>}
         {choices.map(choice => (
           <option key={choice.id} value={choice.id}>{choice.code && choice.code + ' · '}{choice.name ?? choice.label}</option>

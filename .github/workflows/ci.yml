@@ -206,6 +206,8 @@ jobs:
             node tests/integration/postgres-console-smoke.mjs --service-writes
           NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
             node tests/integration/postgres-console-smoke.mjs --dependency-writes
+          NODE_EXTRA_CA_CERTS="$RUNNER_TEMP/aiops-root.crt" \
+            node tests/integration/postgres-console-smoke.mjs --topology-writes
           counts=$(docker compose --profile core exec -T postgres sh -ec '
             exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
           ' <<'SQL'
@@ -252,6 +254,15 @@ jobs:
           SQL
           )
           test "$dependency_counts" = $'SERVICE_DEPENDENCY_CREATED|6\nSERVICE_DEPENDENCY_DELETED|3'
+          topology_counts=$(docker compose --profile core exec -T postgres sh -ec '
+            exec psql -XAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f -
+          ' <<'SQL'
+          SELECT action, count(*) FROM audit_logs
+          WHERE resource_type = 'topology_edge'
+          GROUP BY action ORDER BY action;
+          SQL
+          )
+          test "$topology_counts" = $'TOPOLOGY_EDGE_CREATED|6\nTOPOLOGY_EDGE_DELETED|2'
       - name: Ativar o piloto com dados sintéticos migrados do SQLite
         shell: bash
         run: |
