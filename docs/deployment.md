@@ -265,6 +265,8 @@ Ao trocar de tenant em outra aba, salve apenas depois de atualizar a sessão nes
 
 Use **Verificar coordenadas** na linha do site para informar latitude e longitude em graus decimais. A confirmação grava a geometria no PostGIS, registra o autor e torna o ponto visível no mapa do tenant.
 
+A partir da migração 022, administradores podem usar **Excluir** na aba **Sites** com a escrita de sites habilitada. O site sai do inventário e do mapa. Ativos, eventos, incidentes, amostras de métricas e logs vinculados permanecem, com a referência ao site removida. Ativos configurados com **Site obrigatório** mantêm essa configuração e precisam de um novo vínculo ao editar o cadastro. A exclusão e o registro de auditoria acontecem na mesma transação.
+
 #### Cadastro e edição de ativos no piloto
 
 Configure `AIOPS_POSTGRES_ASSET_WRITE_DSN` com uma conta dedicada ao papel de ativos e defina `AIOPS_POSTGRES_PILOT_WRITE_ASSETS=true`. Recrie o Web e a API do piloto. Em **Ativos**, use **Novo ativo** ou **Editar** para cadastrar o nome, hostname, criticidade, domínio e vínculos com o catálogo. O modo **Site obrigatório** exige um site do mesmo tenant. O modo **Sem localização física** permite ativos lógicos. Ao atribuir uma categoria, a API usa o domínio do catálogo quando a gravação omite esse campo.

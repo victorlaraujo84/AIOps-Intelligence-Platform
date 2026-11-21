@@ -114,7 +114,7 @@ function TenantSelector({ active, busy, onSwitch }: {
   );
 }
 
-function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRemove, removalDisabled }: {
+function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRemove, removalDisabled, removalResource }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
@@ -122,6 +122,7 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRem
   onDependencies?: (row: Row) => void;
   onRemove?: (row: Row) => void;
   removalDisabled?: boolean;
+  removalResource?: string;
 }) {
   const hasActions = Boolean(onEdit || onVerify || onDependencies || onRemove);
   return (
@@ -143,7 +144,7 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRem
                   onClick={() => onVerify(row)}>Verificar coordenadas</button>}
                 {onDependencies && <button type="button" className={button} aria-label={'Dependências de ' + row.name}
                   onClick={() => onDependencies(row)}>Dependências</button>}
-                {onRemove && <button type="button" className={button} aria-label={'Excluir concessão ' + row.name}
+                {onRemove && <button type="button" className={button} aria-label={['Excluir', removalResource, row.name].filter(Boolean).join(' ')}
                   disabled={removalDisabled} onClick={() => onRemove(row)}>Excluir</button>}
               </div>
             </td>}
@@ -154,10 +155,32 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRem
   );
 }
 
-function EditableSites({ tenant }: { tenant: string }) {
+function EditableSites({ tenant, mayRemove }: { tenant: string; mayRemove: boolean }) {
   const [editor, setEditor] = useState<{ mode: 'create' } | { mode: 'edit' | 'verify'; site: Row } | null>(null);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const [removing, setRemoving] = useState(false);
+
+  async function remove(site: Row) {
+    const confirmed = window.confirm(`Excluir o site “${site.name}”? Os ativos serão mantidos e ficarão sem site.`);
+    if (!confirmed) return;
+    setRemoving(true);
+    setNotice('');
+    setError('');
+    try {
+      await request('/inventory/sites/' + site.id, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'X-AIOps-Expected-Tenant': tenant },
+        body: '{}',
+      });
+      saved('Site excluído.');
+    } catch (error) {
+      setError(errorMessage(error));
+    } finally {
+      setRemoving(false);
+    }
+  }
 
   function saved(message: string) {
     setNotice(message);
@@ -167,7 +190,8 @@ function EditableSites({ tenant }: { tenant: string }) {
 
   return (
     <div className="space-y-4">
-      {editor === null && <button type="button" className={button} onClick={() => setEditor({ mode: 'create' })}>Novo site</button>}
+      {editor === null && <button type="button" className={button} disabled={removing} onClick={() => setEditor({ mode: 'create' })}>Novo site</button>}
+      {error && <Message>{error}</Message>}
       {notice && <p role="status" className="text-sm text-emerald-300">{notice}</p>}
       {editor?.mode === 'verify' && <PostgresSiteCoordinates
         key={editor.site.id}
@@ -185,8 +209,10 @@ function EditableSites({ tenant }: { tenant: string }) {
       />}
       <PagedData<Row> key={revision} endpoint="/inventory/sites" render={rows => (
         <InventoryTable columns={resources[0].columns} rows={rows}
-          onEdit={editor ? undefined : site => setEditor({ mode: 'edit', site })}
-          onVerify={editor ? undefined : site => setEditor({ mode: 'verify', site })}
+          onEdit={editor || removing ? undefined : site => setEditor({ mode: 'edit', site })}
+          onVerify={editor || removing ? undefined : site => setEditor({ mode: 'verify', site })}
+          onRemove={mayRemove ? site => void remove(site) : undefined}
+          removalResource="site" removalDisabled={removing || Boolean(editor)}
         />
       )} />
     </div>
@@ -377,7 +403,8 @@ export default function PostgresConsole() {
     }
   }
 
-  const mayAdministerUsers = userAdmin && (identity?.role === 'super_admin' || identity?.role === 'tenant_admin');
+  const isAdmin = identity?.role === 'super_admin' || identity?.role === 'tenant_admin';
+  const mayAdministerUsers = userAdmin && isAdmin;
   const resource = selectedResource.id === 'users' && !mayAdministerUsers ? resources[0] : selectedResource;
   const mapView = resource.id === 'map';
   const mayWrite = identity !== null
@@ -421,16 +448,15 @@ export default function PostgresConsole() {
                 {mapView ? (
                   <PagedData<Marker> key="map" endpoint="/inventory/sites/map?west=-180&south=-90&east=180&north=90" render={rows => <SiteMap rows={rows} />} />
                 ) : resource.id === 'sites' && mayWrite && siteWrites ? (
-                  <EditableSites tenant={identity.active_tenant_id} />
+                  <EditableSites tenant={identity.active_tenant_id} mayRemove={isAdmin} />
                 ) : resource.id === 'assets' && mayWrite && assetWrites ? (
                   <EditableInventory key="assets" tenant={identity.active_tenant_id} resource="assets" columns={resource.columns} />
                 ) : isWritableCatalog(resource.id) ? (
                   <PostgresCatalogCreate<Row> key={resource.id} catalog={resource.id} tenant={identity.active_tenant_id}
                     mayWrite={mayWrite && (resource.id === 'asset-categories' ? assetWrites : siteWrites)}
-                    mayRemove={resource.id === 'concessions' && siteWrites
-                      && (identity.role === 'tenant_admin' || identity.role === 'super_admin')}
+                    mayRemove={resource.id === 'concessions' && siteWrites && isAdmin}
                     render={(rows, onRemove, disabled) => (
-                      <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} />
+                      <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} removalResource="concessão" />
                     )} />
                 ) : resource.id === 'users' ? (
                   <PostgresTenantUsers tenant={identity.active_tenant_id} actor={identity.id} />

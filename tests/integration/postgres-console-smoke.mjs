@@ -663,6 +663,72 @@ if (process.argv.includes('--concession-delete')) {
   process.exit(0);
 }
 
+if (process.argv.includes('--site-delete')) {
+  const admin = client();
+  const other = client();
+  const viewer = client();
+  const operator = client();
+  const global = client();
+  const scope = tenant => ({ 'X-AIOps-Expected-Tenant': tenant });
+  const login = (session, name, password = name) => session('/login', {
+    data: { email: name + '-auth@example.invalid', password: password + '-ci-fixture-only' },
+  });
+  const create = async (session, tenant, path, data) => {
+    const response = await session(path, { data, headers: scope(tenant) });
+    assert.equal(response.status, 201);
+    return response.json();
+  };
+  const list = async (session, path) => {
+    const response = await session(path);
+    assert.equal(response.status, 200);
+    return (await response.json()).items;
+  };
+  assert.equal((await login(admin, 'admin')).status, 204);
+  assert.equal((await login(other, 'admin-b', 'admin')).status, 204);
+  assert.equal((await login(operator, 'operator')).status, 204);
+  assert.equal((await login(viewer, 'viewer')).status, 204);
+  assert.equal((await login(global, 'global')).status, 204);
+
+  const sites = '/inventory/sites';
+  const assets = '/inventory/assets';
+  const site = (await list(viewer, sites)).find(row => row.code === 'SITE-DELETE-CHECK');
+  assert.ok(site, 'Carregue a fixture SITE-DELETE-CHECK antes deste teste.');
+  const foreign = await create(other, tenantB, sites, { code: site.code, name: 'Site outro tenant' });
+  const target = sites + '/' + site.id;
+  assert.equal((await admin(target + '/verify-coords', {
+    method: 'PATCH', data: { latitude: -17.5, longitude: -49.25 }, headers: scope(tenantA),
+  })).status, 200);
+  const map = sites + '/map?west=-50&south=-18&east=-49&north=-17';
+  assert.ok((await list(viewer, map)).some(row => row.id === site.id));
+  const linked = await create(admin, tenantA, assets, {
+    name: 'Ativo mantido após exclusão', site_id: site.id, georeference_mode: 'required',
+  });
+  assert.equal(linked.site_id, site.id);
+
+  const remove = (session, headers) => session(target, { method: 'DELETE', data: {}, headers });
+  assert.equal((await remove(client(), scope(tenantA))).status, 401);
+  assert.equal((await remove(admin)).status, 422);
+  assert.equal((await remove(admin, { ...scope(tenantA), 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+  assert.equal((await remove(operator, scope(tenantA))).status, 403);
+  assert.equal((await remove(viewer, scope(tenantA))).status, 403);
+  assert.equal((await remove(other, scope(tenantB))).status, 404);
+  assert.equal((await global('/switch-tenant', { data: { tenant_id: tenantB } })).status, 200);
+  assert.equal((await remove(global, scope(tenantA))).status, 409);
+
+  const results = await Promise.all([remove(admin, scope(tenantA)), remove(admin, scope(tenantA))]);
+  assert.deepEqual(results.map(response => response.status).sort(), [204, 404]);
+  assert.equal(await results.find(response => response.status === 204).text(), '');
+  assert.ok(!(await list(viewer, sites)).some(row => row.id === site.id));
+  assert.ok(!(await list(viewer, map)).some(row => row.id === site.id));
+  assert.deepEqual((await list(viewer, assets)).find(row => row.id === linked.id), { ...linked, site_id: null });
+  assert.ok((await list(other, sites)).some(row => row.id === foreign.id));
+  for (const session of [admin, other, operator, viewer, global]) {
+    assert.equal((await session('/logout', { data: {} })).status, 204);
+  }
+  console.log('Exclusão de site, mapa, papéis, isolamento e preservação do ativo verificados por HTTPS.');
+  process.exit(0);
+}
+
 const operator = client();
 assert.equal((await fetch(origin + '/postgres-inventory')).status, 200);
 assert.equal((await operator('/status')).status, 200);
@@ -705,6 +771,9 @@ assert.equal((await operator('/tenant-users', { headers: { 'X-AIOps-Expected-Ten
 assert.equal((await operator('/inventory/topology/edges')).status, 200);
 assert.equal((await operator('/inventory/topology/edges', { data: {} })).status, 404);
 assert.equal((await operator('/inventory/sites', { data: { name: 'fixture', code: 'fixture' } })).status, 404);
+assert.equal((await operator('/inventory/sites/' + tenantA, {
+  method: 'DELETE', data: {}, headers: { 'X-AIOps-Expected-Tenant': tenantA },
+})).status, 404);
 assert.equal((await operator('/logout', { data: {} })).status, 204);
 assert.equal((await operator('/me')).status, 401);
 

@@ -152,3 +152,22 @@ async def update_site(
         await audit_inventory_write(connection, tenant, identity, "SITE_UPDATED", "site", site_id)
     response.headers.update(AUTH_HEADERS)
     return dict(site)
+
+
+@router.delete("/{site_id}", status_code=204)
+async def delete_site(
+    site_id: UUID,
+    identity: Annotated[asyncpg.Record, Depends(inventory_write_identity)],
+    pool: Annotated[asyncpg.Pool, Depends(get_site_write_pool)],
+):
+    if identity["role"] not in {"tenant_admin", "super_admin"}:
+        raise HTTPException(403, "Apenas administradores podem excluir sites.", headers=AUTH_HEADERS)
+    async with inventory_write_transaction(pool, identity, "aiops_site_writer") as (connection, tenant):
+        removed_id = await connection.fetchval(
+            "DELETE FROM public.sites WHERE tenant_id = $1 AND id = $2 RETURNING id",
+            tenant, site_id,
+        )
+        if removed_id is None:
+            raise HTTPException(404, "Site não encontrado neste tenant.", headers=AUTH_HEADERS)
+        await audit_inventory_write(connection, tenant, identity, "SITE_DELETED", "site", removed_id)
+    return Response(status_code=204, headers=AUTH_HEADERS)
