@@ -295,6 +295,12 @@ Em **Serviços**, abra **Dependências** na linha de um serviço para consultar 
 
 A partir da migração 024, administradores podem usar **Excluir** na aba **Serviços** com a escrita de serviços habilitada. O PostgreSQL remove as dependências do serviço e os vínculos de outros serviços com ele. Os demais serviços, ativos, métricas, logs e anomalias permanecem. As referências históricas ao serviço excluído são limpas e a operação é registrada na auditoria na mesma transação.
 
+#### Consulta de auditoria no piloto
+
+Abra **Auditoria** para consultar as ações registradas no tenant ativo, da mais recente para a mais antiga. A consulta funciona para contas de leitura e usa o DSN de inventário. A tela mostra horário, ação, papel do autor e recurso. Respeita as permissões das colunas de auditoria do PostgreSQL. Para voltar aos registros anteriores, use **Mais resultados**.
+
+A aba reflete os registros presentes no PostgreSQL. O histórico do console principal continua no SQLite até sua migração.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 

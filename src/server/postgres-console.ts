@@ -170,6 +170,18 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
     router.patch('/tenant-users/:userId/status', tenantUsers);
   }
 
+  router.get('/inventory/audit', async (req, res) => {
+    const token = authenticated(req, res);
+    if (!token) return;
+    const expected = req.get('X-AIOps-Expected-Tenant');
+    if (!expected || !UUID_PATTERN.test(expected)) {
+      res.status(422).json({ error: 'Identificador de tenant inválido.' });
+      return;
+    }
+    const query = queryFor(req, ['after', 'limit']);
+    forward(res, await callCore('/inventory/audit' + query, token, undefined, expected));
+  });
+
   router.get('/inventory/sites/map', async (req, res) => {
     const token = authenticated(req, res);
     if (token) {

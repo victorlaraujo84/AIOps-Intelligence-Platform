@@ -1,10 +1,11 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import os
 from typing import Annotated, Literal
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Header, Query, Request, Response
 
 from .postgres_auth import AUTH_HEADERS, get_current_session
 
@@ -105,6 +106,52 @@ async def inventory_read_transaction(pool: asyncpg.Pool, identity: asyncpg.Recor
                 yield connection, tenant
     except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError):
         raise HTTPException(503, "Inventário temporariamente indisponível.", headers=AUTH_HEADERS) from None
+
+
+@router.get("/audit")
+async def list_audit(
+    response: Response,
+    identity: Annotated[asyncpg.Record, Depends(get_current_session)],
+    pool: Annotated[asyncpg.Pool, Depends(get_inventory_pool)],
+    expected_tenant: Annotated[UUID, Header(alias="X-AIOps-Expected-Tenant")],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    after: Annotated[str | None, Query(max_length=90)] = None,
+):
+    if identity["active_tenant_id"] != expected_tenant:
+        raise HTTPException(409, "Selecione ou confirme o tenant ativo.", headers=AUTH_HEADERS)
+
+    before_time = None
+    before_id = None
+    if after is not None:
+        try:
+            timestamp, identifier = after.split("~", 1)
+            before_time = datetime.fromisoformat(timestamp)
+            if before_time.tzinfo is None:
+                raise ValueError("timestamp sem fuso")
+            before_time = before_time.astimezone(timezone.utc)
+            before_id = UUID(identifier)
+        except (ValueError, OverflowError):
+            raise HTTPException(422, "Cursor de auditoria inválido.", headers=AUTH_HEADERS) from None
+
+    async with inventory_read_transaction(pool, identity) as (connection, tenant):
+        rows = await connection.fetch(
+            """
+            SELECT id, tenant_id, actor_role, action, resource_type, resource_id, created_at_utc
+            FROM public.audit_logs
+            WHERE tenant_id = $1
+              AND ($2::timestamptz IS NULL OR (created_at_utc, id) < ($2::timestamptz, $3::uuid))
+            ORDER BY created_at_utc DESC, id DESC
+            LIMIT $4
+            """,
+            tenant, before_time, before_id, limit + 1,
+        )
+
+    cursor = None
+    if len(rows) > limit:
+        last = rows[limit - 1]
+        cursor = f"{last['created_at_utc'].isoformat()}~{last['id']}"
+    response.headers.update(AUTH_HEADERS)
+    return {"items": [dict(row) for row in rows[:limit]], "next_after": cursor}
 
 
 @router.get("/{resource}")
