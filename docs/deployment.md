@@ -181,6 +181,12 @@ A migração 013 amplia o papel de escrita de ativos para gerenciar os enlaces n
 
 As listagens aceitam `limit` e `after`. O PostgreSQL restringe vínculos ao mesmo tenant e impede duplicatas de origem, destino e tipo. A API bloqueia ciclos e registra a criação e remoção na mesma transação que a auditoria. Remover o DSN de escrita de ativos desativa as gravações cadastrais e topológicas.
 
+### Categorias de ativos
+
+A migração 014 habilita o catálogo de categorias no perfil interno `core`. Use `GET /api/v1/inventory/asset-categories` com o DSN de leitura e `POST /api/v1/inventory/asset-categories` com o DSN de escrita de ativos. O cadastro recebe código, rótulo e domínio. O código normalizado é único por tenant. O cadastro e a auditoria são gravados na mesma transação.
+
+O cadastro e a edição de ativos aceitam `category_id` do mesmo tenant. Ao atribuir uma categoria, a API copia seu código para `asset_type_code` e usa o domínio da categoria quando o corpo omite `domain`. Para desvincular, envie `category_id: null` no `PATCH`. Isso limpa o código do vínculo e preserva o domínio cadastrado, a menos que o corpo forneça outro domínio. Um ativo sem categoria conserva seu código de tipo legado.
+
 ## Segredos e configuração
 Configure os valores por ambiente ou secret store. O Web valida a configuração antes de abrir o banco.
 
