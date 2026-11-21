@@ -21,7 +21,7 @@ type TicketInput = { summary: string; description: string };
 type RemoteTicket = { externalId: string; reference: string | null };
 type FailureCode = 'NOT_SUPPORTED' | 'VALIDATION' | 'AUTH' | 'PERMISSION' | 'NOT_FOUND' | 'RATE_LIMIT'
   | 'REMOTE_ERROR' | 'NETWORK' | 'NEEDS_RECONCILIATION';
-type Result<T> = { ok: true; value: T } | { ok: false; code: FailureCode; retryable: boolean };
+type Result<T> = { ok: true; value: T } | { ok: false; code: FailureCode; retryable: boolean; retryAfterSeconds?: number };
 
 type Transport = { get: typeof getOutboundHttps; post: typeof postOutboundHttpsJson };
 const defaultTransport: Transport = { get: getOutboundHttps, post: postOutboundHttpsJson };
@@ -94,11 +94,15 @@ function providerHeaders(auth: Basic | Bearer): Record<string, string> | undefin
   return { Authorization: 'Basic ' + Buffer.from(auth.username + ':' + auth.apiPassword).toString('base64') };
 }
 
-function httpFailure(status: number, creating: boolean): Result<never> {
+function httpFailure(status: number, creating: boolean, retryAfterSeconds?: number): Result<never> {
   if (status === 401) return failure('AUTH');
   if (status === 403) return failure('PERMISSION');
   if (status === 404) return failure('NOT_FOUND');
-  if (status === 429) return failure('RATE_LIMIT', true);
+  if (status === 429) {
+    return retryAfterSeconds
+      ? { ok: false, code: 'RATE_LIMIT', retryable: true, retryAfterSeconds }
+      : failure('RATE_LIMIT', true);
+  }
   if (status >= 500 || status === 408) {
     return creating ? failure('NEEDS_RECONCILIATION') : failure('REMOTE_ERROR', true);
   }
@@ -133,7 +137,7 @@ export function createItsmAdapter(destination: ItsmDestination, transport: Trans
       const session = await transport.get(endpoint('/apirest.php/initSession'), {
         headers: { ...headers, ...app, Authorization: 'user_token ' + auth.userToken },
       });
-      if (!session.ok) return httpFailure(session.status, false);
+      if (!session.ok) return httpFailure(session.status, false, session.retryAfterSeconds);
       const sessionToken = record(session.json())?.session_token;
       if (typeof sessionToken !== 'string' || !headerToken(sessionToken)) return failure('AUTH');
       token = sessionToken;
@@ -156,7 +160,7 @@ export function createItsmAdapter(destination: ItsmDestination, transport: Trans
     return execute(async headers => {
       try {
         const response = await transport.get(endpoint(path), { headers });
-        if (!response.ok) return httpFailure(response.status, false);
+        if (!response.ok) return httpFailure(response.status, false, response.retryAfterSeconds);
         const ticket = remoteTicket(destination.provider, response.json());
         return ticket?.externalId === externalId ? { ok: true, value: ticket } : failure('VALIDATION');
       } catch {
@@ -172,7 +176,7 @@ export function createItsmAdapter(destination: ItsmDestination, transport: Trans
     return execute(async headers => {
       try {
         const response = await transport.post(endpoint(resourcePaths[destination.provider]), payload, { headers });
-        if (!response.ok) return httpFailure(response.status, true);
+        if (!response.ok) return httpFailure(response.status, true, response.retryAfterSeconds);
         if (response.status !== 201) return failure('NEEDS_RECONCILIATION');
         const ticket = remoteTicket(destination.provider, response.json());
         return ticket ? { ok: true, value: ticket } : failure('NEEDS_RECONCILIATION');

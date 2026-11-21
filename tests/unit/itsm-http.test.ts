@@ -106,7 +106,7 @@ test('resultado incerto de criação exige reconciliação', async () => {
       if (posts === 1) throw new Error('Timeout');
       if (posts === 2) return { ok: true, status: 201, json: () => ({ result: {} }) };
       if (posts === 3) return { ok: false, status: 503, json: () => undefined };
-      return { ok: false, status: 429, json: () => undefined };
+      return { ok: false, status: 429, retryAfterSeconds: 240, json: () => undefined };
     },
   };
   const adapter = createItsmAdapter(destination, transport);
@@ -114,5 +114,5 @@ test('resultado incerto de criação exige reconciliação', async () => {
     assert.deepEqual(await adapter.createTicket(input), { ok: false, code: 'NEEDS_RECONCILIATION', retryable: false });
     assert.equal(posts, attempt);
   }
-  assert.deepEqual(await adapter.createTicket(input), { ok: false, code: 'RATE_LIMIT', retryable: true });
+  assert.deepEqual(await adapter.createTicket(input), { ok: false, code: 'RATE_LIMIT', retryable: true, retryAfterSeconds: 240 });
 });

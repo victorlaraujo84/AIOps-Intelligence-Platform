@@ -1,0 +1,45 @@
+# Enable with compose.yaml, compose.postgres-release.yaml and profiles core and itsm.
+services:
+  web:
+    environment:
+      AIOPS_POSTGRES_ITSM: "true"
+  api:
+    environment:
+      AIOPS_POSTGRES_ITSM: "true"
+  itsm-worker:
+    profiles: [itsm]
+    image: ${AIOPS_ITSM_WORKER_IMAGE:-aiops-platform-itsm-worker:local}
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.itsm-worker
+    environment:
+      AIOPS_ITSM_DB_DSN: ${AIOPS_ITSM_DB_DSN:?configure AIOPS_ITSM_DB_DSN}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 25s
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ${AIOPS_ITSM_CONFIG_DIR:?configure AIOPS_ITSM_CONFIG_DIR}
+        target: /run/aiops-itsm
+        read_only: true
+    networks:
+      - backend
+      - itsm-egress
+    depends_on:
+      postgres-migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "test", "-s", "/tmp/aiops-itsm-ready"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  itsm-egress: {}

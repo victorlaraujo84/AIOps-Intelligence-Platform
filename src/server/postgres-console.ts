@@ -68,6 +68,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   const assetWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_ASSETS === 'true';
   const serviceWrites = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_WRITE_SERVICES === 'true';
   const incidentWrites = pilotOnly && process.env.AIOPS_POSTGRES_INCIDENT_WRITES === 'true';
+  const itsm = pilotOnly && process.env.AIOPS_POSTGRES_ITSM === 'true';
   const userAdmin = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_MANAGE_USERS === 'true';
   const tenantCreation = pilotOnly && process.env.AIOPS_POSTGRES_PILOT_CREATE_TENANTS === 'true';
   const limiter = new SlidingWindowRateLimiter(30, 15 * 60 * 1000);
@@ -88,7 +89,7 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
 
   router.get('/status', (_req, res) => {
     res.json({ enabled: true, pilot_only: pilotOnly, site_writes: siteWrites, asset_writes: assetWrites, service_writes: serviceWrites,
-      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites });
+      user_admin: userAdmin, tenant_creation: tenantCreation, incident_writes: incidentWrites, itsm });
   });
 
   router.post('/login', async (req, res) => {
@@ -210,6 +211,22 @@ export function postgresConsoleRouter(enabled: boolean, pilotOnly: boolean, site
   }
   router.get('/inventory/incidents/:id', incident);
   if (incidentWrites) router.patch('/inventory/incidents/:id/rca-review', incident);
+
+  if (itsm) {
+    async function incidentTickets(req: Request, res: Response) {
+      const token = authenticated(req, res);
+      if (!token) return;
+      const expected = req.get('X-AIOps-Expected-Tenant');
+      if (!expected || !UUID_PATTERN.test(expected) || !UUID_PATTERN.test(req.params.id)) {
+        res.status(422).json({ error: 'Identificador de incidente ou tenant inválido.' });
+        return;
+      }
+      const body = req.method === 'POST' ? req.body ?? {} : undefined;
+      forward(res, await callCore('/inventory/incidents/' + req.params.id + '/itsm/tickets', token, body, expected));
+    }
+    router.get('/inventory/incidents/:id/itsm/tickets', incidentTickets);
+    if (incidentWrites) router.post('/inventory/incidents/:id/itsm/tickets', incidentTickets);
+  }
 
   router.get('/inventory/sites/map', async (req, res) => {
     const token = authenticated(req, res);

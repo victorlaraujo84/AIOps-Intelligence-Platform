@@ -339,10 +339,10 @@ function ServicesInventory({ tenant, columns, mayWrite, mayRemove }: {
   )} />;
 }
 
-function IncidentInventory({ tenant, mayReview, columns }: { tenant: string; mayReview: boolean; columns: readonly Column[] }) {
+function IncidentInventory({ tenant, mayReview, itsm, columns }: { tenant: string; mayReview: boolean; itsm: boolean; columns: readonly Column[] }) {
   const [incident, setIncident] = useState<string | null>(null);
   if (incident) {
-    return <PostgresIncidentDetail incidentId={incident} tenant={tenant} mayReview={mayReview} onBack={() => setIncident(null)} />;
+    return <PostgresIncidentDetail incidentId={incident} tenant={tenant} mayReview={mayReview} itsm={itsm} onBack={() => setIncident(null)} />;
   }
   return (
     <PagedData<Row> endpoint="/inventory/feed/incidents" expectedTenant={tenant} render={rows => (
@@ -405,6 +405,7 @@ export default function PostgresConsole() {
   const [assetWrites, setAssetWrites] = useState(false);
   const [serviceWrites, setServiceWrites] = useState(false);
   const [incidentWrites, setIncidentWrites] = useState(false);
+  const [itsm, setItsm] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [userAdmin, setUserAdmin] = useState(false);
@@ -414,13 +415,14 @@ export default function PostgresConsole() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; itsm: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
         setServiceWrites(status.service_writes);
         setIncidentWrites(status.incident_writes);
+        setItsm(status.itsm);
         setUserAdmin(status.user_admin);
         setTenantCreation(status.tenant_creation);
       })
@@ -537,7 +539,7 @@ export default function PostgresConsole() {
                     )} />
                 ) : resource.id === 'incidents' ? (
                   <IncidentInventory tenant={identity.active_tenant_id} columns={resource.columns}
-                    mayReview={mayWrite && incidentWrites} />
+                    mayReview={mayWrite && incidentWrites} itsm={itsm} />
                 ) : resource.feed ? (
                   <PagedData<Row> key={resource.id} endpoint={resource.feed} expectedTenant={identity.active_tenant_id}
                     render={rows => <InventoryTable columns={resource.columns} rows={rows.map(row => ({

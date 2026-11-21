@@ -379,3 +379,19 @@ Com imagens publicadas, use `dc pull web api` e `dc up -d --no-build --wait`. Pa
 Em **Incidentes**, abra **Detalhes** para consultar evidências, site, ativo e eventos vinculados. Operadores e administradores podem corrigir a categoria, reconhecer ou resolver um incidente com a escrita habilitada. Após uma revisão concorrente, volte à lista e reabra o incidente antes de salvar. O estado, a identificação do revisor e a auditoria são confirmados juntos. Uma revisão não envia notificações nem atualiza tickets externos nesta versão.
 
 As telas de conectores, eventos, incidentes, métricas, logs e anomalias apresentam o histórico armazenado. Para substituir a instância legada, o aceite precisa cobrir a configuração e execução de conectores, a ingestão, a operação de incidentes, os relatórios e as integrações efetivamente usadas. Mantenha o arquivo privado e os volumes dos dois ambientes até concluir o ensaio de retorno. Durante a janela, suspenda os escritores legados antes do backup final e valide o PostgreSQL com `AIOPS_POSTGRES_RELEASE_WRITES=false`. Concluído o aceite, defina a variável como `true` e recrie a API e o Web para liberar gravações. Após gravações no PostgreSQL, restaure o serviço sem descartar esses dados ou execute a reconciliação acordada.
+
+### Worker de chamados ITSM
+
+A migração 029 habilita as funções de abertura e acompanhamento de chamados. Inclua `compose.postgres-itsm.yaml` e o perfil `itsm` somente nos ambientes que operarão o worker. Configure `AIOPS_ITSM_WORKER_IMAGE` com a mesma tag do Web e da API. O worker usa a rede interna para o PostgreSQL e uma rede de saída para o destino HTTPS.
+
+Provisione uma conta PostgreSQL dedicada com `LOGIN` e sem privilégios administrativos. Conceda o papel `aiops_itsm_worker` com herança e configure a senha interativamente com `\password` no `psql`. Ponha o DSN em `AIOPS_ITSM_DB_DSN` no arquivo privado do Compose. O worker confere as permissões ao iniciar.
+
+Para cada destino:
+
+1. No sandbox autorizado, comprove a leitura de um chamado conhecido e a capacidade de criação conforme o contrato do fornecedor. Veja [contratos ITSM](ITSM_GENERICO_CONTRATOS.md).
+2. Registre uma integração em `aiops_notifications.itsm_integrations` com `tenant_id`, `name` e `provider`. Use o UUID retornado como nome do arquivo privado `<integração>.json` no diretório `AIOPS_ITSM_CONFIG_DIR`. Use os mesmos campos do verificador de conexão e acrescente `tenantId`. O arquivo deve ter permissões `0600` e ser legível pelo usuário `node` do contêiner. No JSM, `requiredFields` aceita valores escalares para `customfield_<id>`.
+3. Depois da verificação, registre a data em `create_ticket_verified_at` e habilite `enabled` para o tenant. Na tela **Incidentes → Detalhes → Chamados ITSM**, selecione **Solicitar chamado**. Com `AIOPS_POSTGRES_RELEASE_WRITES=false`, a tela permite consulta dos vínculos.
+
+Cada integração recebe uma solicitação por incidente. O worker envia a referência do incidente e confirma o vínculo após obter um identificador externo válido. O 429 usa espera progressiva e respeita `Retry-After` de até 24 horas. Caso a solicitação possa ter chegado ao fornecedor sem confirmação, o estado passa a **Conferência manual necessária**. Consulte a ferramenta de destino antes de retomar o atendimento.
+
+Acompanhe o fluxo no sandbox antes de habilitar um destino operacional. Para suspender envios, desabilite o destino, aguarde o processamento em andamento e pare o worker. Operações e vínculos ficam no banco.
