@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ConsoleError, errorMessage, request } from '../lib/postgres-console.ts';
+import { PostgresIncidentItsm } from './PostgresIncidentItsm.tsx';
 import { Message } from './PostgresInventoryFields.tsx';
 
 const categories = {
@@ -95,8 +96,8 @@ function ReviewForm({ incident, path, tenant, onSaved }: {
   );
 }
 
-export function PostgresIncidentDetail({ incidentId, tenant, mayReview, onBack }: {
-  incidentId: string; tenant: string; mayReview: boolean; onBack: () => void;
+export function PostgresIncidentDetail({ incidentId, tenant, mayReview, itsm, onBack }: {
+  incidentId: string; tenant: string; mayReview: boolean; itsm: boolean; onBack: () => void;
 }) {
   const path = '/inventory/incidents/' + incidentId;
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -163,6 +164,7 @@ export function PostgresIncidentDetail({ incidentId, tenant, mayReview, onBack }
             {detail.next_after && <button type="button" className={button} disabled={loading}
               onClick={() => void load(detail.next_after ?? undefined)}>Mais eventos</button>}
           </section>
+          {itsm && <PostgresIncidentItsm incidentId={incidentId} tenant={tenant} mayRequest={mayReview} />}
           {mayReview && !loading && <ReviewForm key={incident.human_reviewed_at_utc ?? 'initial'}
             incident={incident} path={path} tenant={tenant} onSaved={() => setRevision(previous => previous + 1)} />}
         </>

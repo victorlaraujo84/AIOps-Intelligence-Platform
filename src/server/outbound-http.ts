@@ -43,6 +43,7 @@ interface OutboundOptions {
 interface OutboundResponse {
   ok: boolean;
   status: number;
+  retryAfterSeconds?: number;
   json(): unknown;
 }
 
@@ -52,6 +53,12 @@ export function getOutboundHttps(rawUrl: string, options: OutboundOptions = {}):
 
 export function postOutboundHttpsJson(rawUrl: string, body: object, options: OutboundOptions = {}): Promise<OutboundResponse> {
   return outboundHttps(rawUrl, 'POST', options, JSON.stringify(body));
+}
+
+function retryAfter(value: string | undefined): number | undefined {
+  if (!value) return;
+  const seconds = /^\d+$/.test(value) ? Number(value) : Math.ceil((Date.parse(value) - Date.now()) / 1000);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds, 86_400);
 }
 
 async function outboundHttps(
@@ -83,7 +90,10 @@ async function outboundHttps(
 
       const ok = status >= 200 && status < 300;
       if (options.statusOnly || !ok) {
-        resolve({ status, ok, json: () => { throw new Error('Resposta sem corpo disponível.'); } });
+        resolve({
+          status, ok, retryAfterSeconds: retryAfter(response.headers?.['retry-after']),
+          json: () => { throw new Error('Resposta sem corpo disponível.'); },
+        });
         response.destroy();
         return;
       }

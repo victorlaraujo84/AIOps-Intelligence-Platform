@@ -1,0 +1,8 @@
+FROM node:22-alpine
+WORKDIR /app/services/itsm-worker
+COPY services/itsm-worker/package.json services/itsm-worker/package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+COPY services/itsm-worker/operation.ts services/itsm-worker/worker.ts ./
+COPY src/server/itsm-http.ts src/server/itsm-config.ts src/server/outbound-http.ts src/server/security.ts /app/src/server/
+USER node
+CMD ["node", "--import", "tsx", "worker.ts"]

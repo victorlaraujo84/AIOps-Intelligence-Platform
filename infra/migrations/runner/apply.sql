@@ -44,7 +44,8 @@ WITH known(version, filename, sha256) AS (
     (25, '025_legacy_operational_history.sql', :'operational_history_sha'),
     (26, '026_asset_identification.sql', :'asset_identification_sha'),
     (27, '027_incident_review.sql', :'incident_review_sha'),
-    (28, '028_incident_outbox.sql', :'incident_outbox_sha')
+    (28, '028_incident_outbox.sql', :'incident_outbox_sha'),
+    (29, '029_itsm_ticket_creation.sql', :'itsm_creation_sha')
 )
 SELECT NOT EXISTS (
     SELECT 1 FROM aiops_admin.schema_migrations AS stored
@@ -78,13 +79,21 @@ SELECT NOT EXISTS (
   COALESCE(bool_or(m.version = 25), false) AS has_operational_history,
   COALESCE(bool_or(m.version = 26), false) AS has_asset_identification,
   COALESCE(bool_or(m.version = 27), false) AS has_incident_review,
-  COALESCE(bool_or(m.version = 28), false) AS has_incident_outbox
+  COALESCE(bool_or(m.version = 28), false) AS has_incident_outbox,
+  COALESCE(bool_or(m.version = 29), false) AS has_itsm_creation
 FROM aiops_admin.schema_migrations AS m
 \gset
 
 \if :history_matches
 \else
   DO $$ BEGIN RAISE EXCEPTION 'Histórico PostgreSQL incompatível ou checksum alterado'; END $$;
+\endif
+
+\if :has_itsm_creation
+  \if :has_incident_outbox
+  \else
+    DO $$ BEGIN RAISE EXCEPTION 'Histórico fora de ordem: versão 029 sem versão 028'; END $$;
+  \endif
 \endif
 
 \if :has_incident_outbox
@@ -488,6 +497,13 @@ FROM aiops_admin.schema_migrations AS m
   \ir ../028_incident_outbox.sql
   INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
   VALUES (28, '028_incident_outbox.sql', :'incident_outbox_sha');
+\endif
+
+\if :has_itsm_creation
+\else
+  \ir ../029_itsm_ticket_creation.sql
+  INSERT INTO aiops_admin.schema_migrations (version, filename, sha256)
+  VALUES (29, '029_itsm_ticket_creation.sql', :'itsm_creation_sha');
 \endif
 
 COMMIT;
