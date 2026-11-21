@@ -5,6 +5,7 @@ import { ConsoleError, errorMessage, post, request } from '../lib/postgres-conso
 import { Message, PagedData } from './PostgresInventoryFields.tsx';
 import { PostgresTenantCreator, type NewTenant } from './PostgresTenantCreator.tsx';
 import { PostgresTenantUsers } from './PostgresTenantUsers.tsx';
+import { PostgresIncidentDetail } from './PostgresIncidentDetail.tsx';
 import { PostgresTopology } from './PostgresTopology.tsx';
 import { isWritableCatalog, PostgresCatalogCreate } from './PostgresCatalogCreate.tsx';
 import { PostgresServiceDependencies } from './PostgresServiceDependencies.tsx';
@@ -137,17 +138,18 @@ function TenantSelector({ active, busy, onSwitch }: {
   );
 }
 
-function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRemove, removalDisabled, removalResource }: {
+function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onView, onRemove, removalDisabled, removalResource }: {
   columns: readonly Column[];
   rows: Row[];
   onEdit?: (row: Row) => void;
   onVerify?: (row: Row) => void;
+  onView?: (row: Row) => void;
   onDependencies?: (row: Row) => void;
   onRemove?: (row: Row) => void;
   removalDisabled?: boolean;
   removalResource?: string;
 }) {
-  const hasActions = Boolean(onEdit || onVerify || onDependencies || onRemove);
+  const hasActions = Boolean(onEdit || onVerify || onDependencies || onView || onRemove);
   return (
     <div className="overflow-x-auto rounded-md border border-slate-800">
       <table className="w-full text-left text-sm">
@@ -162,6 +164,7 @@ function InventoryTable({ columns, rows, onEdit, onVerify, onDependencies, onRem
             {columns.map(([key]) => <td key={key} className="px-3 py-2">{row[key] ?? '—'}</td>)}
             {hasActions && <td className="px-3 py-2">
               <div className="flex flex-wrap gap-2">
+                {onView && <button type="button" className={button} aria-label={'Detalhes de ' + row.title} onClick={() => onView(row)}>Detalhes</button>}
                 {onEdit && <button type="button" className={button} aria-label={'Editar ' + row.name} onClick={() => onEdit(row)}>Editar</button>}
                 {onVerify && <button type="button" className={button} aria-label={'Verificar coordenadas de ' + row.name}
                   onClick={() => onVerify(row)}>Verificar coordenadas</button>}
@@ -336,6 +339,19 @@ function ServicesInventory({ tenant, columns, mayWrite, mayRemove }: {
   )} />;
 }
 
+function IncidentInventory({ tenant, mayReview, columns }: { tenant: string; mayReview: boolean; columns: readonly Column[] }) {
+  const [incident, setIncident] = useState<string | null>(null);
+  if (incident) {
+    return <PostgresIncidentDetail incidentId={incident} tenant={tenant} mayReview={mayReview} onBack={() => setIncident(null)} />;
+  }
+  return (
+    <PagedData<Row> endpoint="/inventory/feed/incidents" expectedTenant={tenant} render={rows => (
+      <InventoryTable columns={columns} onView={row => setIncident(row.id)}
+        rows={rows.map(row => ({ ...row, created_at_utc: recordTime.format(new Date(String(row.created_at_utc))) }))} />
+    )} />
+  );
+}
+
 function SiteMap({ rows }: { rows: Marker[] }) {
   const element = useRef<HTMLDivElement>(null);
   const map = useRef<L.Map | null>(null);
@@ -388,6 +404,7 @@ export default function PostgresConsole() {
   const [siteWrites, setSiteWrites] = useState(false);
   const [assetWrites, setAssetWrites] = useState(false);
   const [serviceWrites, setServiceWrites] = useState(false);
+  const [incidentWrites, setIncidentWrites] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [userAdmin, setUserAdmin] = useState(false);
@@ -397,12 +414,13 @@ export default function PostgresConsole() {
 
   useEffect(() => {
     const controller = new AbortController();
-    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
+    void request<{ pilot_only: boolean; site_writes: boolean; asset_writes: boolean; service_writes: boolean; incident_writes: boolean; user_admin: boolean; tenant_creation: boolean }>('/status', { signal: controller.signal })
       .then(status => {
         setShowMainLink(!status.pilot_only);
         setSiteWrites(status.site_writes);
         setAssetWrites(status.asset_writes);
         setServiceWrites(status.service_writes);
+        setIncidentWrites(status.incident_writes);
         setUserAdmin(status.user_admin);
         setTenantCreation(status.tenant_creation);
       })
@@ -517,6 +535,9 @@ export default function PostgresConsole() {
                     render={(rows, onRemove, disabled) => (
                       <InventoryTable columns={resource.columns} rows={rows} onRemove={onRemove} removalDisabled={disabled} removalResource="concessão" />
                     )} />
+                ) : resource.id === 'incidents' ? (
+                  <IncidentInventory tenant={identity.active_tenant_id} columns={resource.columns}
+                    mayReview={mayWrite && incidentWrites} />
                 ) : resource.feed ? (
                   <PagedData<Row> key={resource.id} endpoint={resource.feed} expectedTenant={identity.active_tenant_id}
                     render={rows => <InventoryTable columns={resource.columns} rows={rows.map(row => ({
