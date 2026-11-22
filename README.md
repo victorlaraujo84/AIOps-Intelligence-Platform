@@ -48,6 +48,30 @@ Acesse `http://localhost:3000`. Como o banco inicia sem usuários fictícios, cr
 
 ## Execução com Docker Compose
 
+### Instalação local da versão PostgreSQL em produção
+
+Use Git, Python 3, shell POSIX e Docker com Compose v2.24.4 ou superior em um ambiente Linux (incluindo WSL2 com Docker Desktop). As imagens publicadas da aplicação são Linux/amd64. Em outra arquitetura é necessário suporte a emulação de amd64 para essas imagens.
+
+```sh
+git clone https://github.com/victorlaraujo84/AIOps-Intelligence-Platform.git
+cd AIOps-Intelligence-Platform
+sh scripts/docker-local.sh install
+sh scripts/docker-local.sh admin --email admin@aiops.local --name Administrador
+```
+
+Escolha uma senha de pelo menos 12 caracteres quando solicitado. O administrador é criado uma vez, no banco novo. Abra **https://localhost:8443/postgres-inventory**, confie no certificado da CA local de `.aiops-local/root-ca.crt`, entre e crie o primeiro tenant. Para verificar o HTTPS pelo terminal:
+
+```sh
+curl --cacert .aiops-local/root-ca.crt https://localhost:8443/api/health
+sh scripts/docker-local.sh compose ps
+```
+
+A instalação baixa as imagens da aplicação `rc-1bce5875691b` e aplica as migrações até a 034. O projeto Compose `aiops-local-pg` possui volumes, segredos e dados próprios. Somente o HTTPS é publicado em loopback. Os workers de clima e notificações iniciam sem destinos configurados. O serviço `operations` verifica o disco e mantém as sete cópias horárias mais recentes em `.aiops-local/backups`. Proteja esse diretório e o arquivo privado `.aiops-local/release.env`.
+
+Para parar, execute `sh scripts/docker-local.sh compose stop`. Para retomar, execute `sh scripts/docker-local.sh install` na mesma pasta. A opção `AIOPS_LOCAL_PORT` permite trocar a porta 8443. Mantenha o mesmo valor nas execuções. O guia de implantação cobre migração de instalações existentes.
+
+### Console legado com SQLite
+
 Em uma instalação nova, use Docker Engine com Compose v2 e OpenSSL. Os comandos abaixo iniciam o console Web com SQLite persistente e um proxy HTTPS acessível pelo próprio host.
 
 ```bash

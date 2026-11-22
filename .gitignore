@@ -19,3 +19,4 @@ venv/
 mlruns/
 artifacts/
 /aiops-local-ca.crt
+/.aiops-local/
