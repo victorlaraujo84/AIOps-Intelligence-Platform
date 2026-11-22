@@ -30,7 +30,7 @@ END $$;
 """
 
 
-def prepare(env_file):
+def prepare(env_file, local=False):
     fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as handle:
         for key, value in {
@@ -44,6 +44,16 @@ def prepare(env_file):
                 f"AIOPS_POSTGRES_{key}_DSN=postgresql://aiops_release_{suffix}:{secrets.token_hex(32)}"
                 f"@postgres:5432/{DATABASE}\n"
             )
+
+        if local:
+            backup_password = secrets.token_hex(32)
+            for worker in ("weather", "notification"):
+                handle.write(
+                    f"AIOPS_{worker.upper()}_DB_DSN=postgresql://aiops_release_{worker}:{secrets.token_hex(32)}"
+                    f"@postgres:5432/{DATABASE}\n"
+                )
+            handle.write(f"AIOPS_BACKUP_PASSWORD={backup_password}\n")
+            handle.write(f"LOCAL_UID={os.getuid()}\nLOCAL_GID={os.getgid()}\n")
 
 
 def provision_roles(env_file):
@@ -71,6 +81,33 @@ END $$;
 ALTER ROLE {login} LOGIN {inheritance} NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
   PASSWORD '{match[1]}';
 GRANT {role} TO {login} WITH {membership};
+"""
+    for worker in ("weather", "notification"):
+        key = f"AIOPS_{worker.upper()}_DB_DSN"
+        if key not in values:
+            continue
+        login = f"aiops_release_{worker}"
+        match = re.fullmatch(rf"postgresql://{login}:([0-9a-f]{{64}})@postgres:5432/{DATABASE}", values[key])
+        if match is None:
+            raise ValueError(f"DSN inválido para {worker}.")
+        sql += f"""
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{login}') THEN CREATE ROLE {login}; END IF;
+END $$;
+ALTER ROLE {login} LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '{match[1]}';
+GRANT aiops_{worker}_worker TO {login};
+"""
+    if "AIOPS_BACKUP_PASSWORD" in values:
+        password = values["AIOPS_BACKUP_PASSWORD"]
+        if not re.fullmatch(r"[0-9a-f]{64}", password):
+            raise ValueError("Credencial de backup inválida.")
+        sql += f"""
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'aiops_backup') THEN CREATE ROLE aiops_backup; END IF;
+END $$;
+ALTER ROLE aiops_backup LOGIN BYPASSRLS NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION PASSWORD '{password}';
+GRANT pg_read_all_data, pg_monitor TO aiops_backup;
+ALTER ROLE aiops_backup SET default_transaction_read_only=on;
 """
     return sql + "COMMIT;\n"
 
@@ -133,7 +170,7 @@ def main():
     parser.add_argument("--env-file", type=Path, required=True)
     parser.add_argument("--project", default="aiops-postgres")
     actions = parser.add_subparsers(dest="action", required=True)
-    actions.add_parser("prepare")
+    actions.add_parser("prepare").add_argument("--local", action="store_true")
     actions.add_parser("roles")
     account = actions.add_parser("bootstrap")
     account.add_argument("--email", required=True)
@@ -144,7 +181,7 @@ def main():
         parser.error("Nome de projeto inválido.")
     try:
         if args.action == "prepare":
-            prepare(args.env_file)
+            prepare(args.env_file, args.local)
         else:
             verify_private_file(args.env_file)
             sql = provision_roles(args.env_file) if args.action == "roles" else bootstrap(args)

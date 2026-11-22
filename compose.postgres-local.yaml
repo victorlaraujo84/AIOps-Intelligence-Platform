@@ -1,0 +1,55 @@
+x-logging: &logging
+  driver: local
+  options: {max-size: "1m", max-file: "2"}
+services:
+  proxy:
+    logging: *logging
+    ports: !override
+      - "127.0.0.1:${AIOPS_LOCAL_PORT:-8443}:443"
+  web:
+    logging: *logging
+    image: ghcr.io/victorlaraujo84/aiops-intelligence-platform-web:rc-1bce5875691b
+  api:
+    logging: *logging
+    image: ghcr.io/victorlaraujo84/aiops-intelligence-platform-api:rc-1bce5875691b
+  postgres:
+    logging: *logging
+    command: ["postgres", "-c", "max_wal_size=128MB", "-c", "min_wal_size=32MB"]
+  postgres-migrate:
+    logging: *logging
+  redis:
+    logging: *logging
+  weather-worker:
+    logging: *logging
+    image: ghcr.io/victorlaraujo84/aiops-intelligence-platform-web:weather-worker-rc-1bce5875691b
+  notification-worker:
+    logging: *logging
+    image: ghcr.io/victorlaraujo84/aiops-intelligence-platform-web:notification-worker-rc-1bce5875691b
+  operations:
+    image: postgis/postgis:16-3.4-alpine
+    user: "${LOCAL_UID:?}:${LOCAL_GID:?}"
+    entrypoint: ["/bin/sh", "/watch.sh"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGDATABASE: aiops_platform_postgres
+      PGUSER: aiops_backup
+      PGCONNECT_TIMEOUT: "5"
+      PGPASSWORD: ${AIOPS_BACKUP_PASSWORD:?}
+    volumes:
+      - ./infra/docker/watch-postgres.sh:/watch.sh:ro
+      - ./.aiops-local/backups:/state
+    healthcheck:
+      test: ["CMD-SHELL", "test -n \"$$(find /state -name backup-ok -mmin -75)\" && test -n \"$$(find /state -name capacity-ok -mmin -10)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    logging: *logging
